@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 const source = fileURLToPath(new URL('../skills/apple-planner/', import.meta.url));
 const destination = path.join(process.env.CODEX_HOME || path.join(homedir(), '.codex'), 'skills', 'apple-planner');
 const stamp = Date.now();
-for (const relative of ['SKILL.md', 'agents/openai.yaml', 'references/advanced.md']) {
+for (const relative of ['SKILL.md', 'agents/openai.yaml', 'references/advanced.md', 'references/extensions.md']) {
   const from = path.join(source, relative), to = path.join(destination, relative);
   mkdirSync(path.dirname(to), { recursive: true });
   if (existsSync(to)) {

@@ -31,7 +31,7 @@ async function remove(item) {
 }
 try {
   await client.connect(transport);
-  assert.equal((await client.listTools()).tools.length, 25);
+  assert.equal((await client.listTools()).tools.length, 40);
   const status = await call('get_status');
   assert.equal(status.calendar, 'full_access'); assert.equal(status.reminders, 'full_access');
   const list = (await call('list_reminder_lists')).items.find(c => c.writable);

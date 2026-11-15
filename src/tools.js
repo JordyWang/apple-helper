@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { extensionTools } from './extensions.js';
 
 const id = z.string().min(1).max(2048).describe('Use a returned ID, never a guessed name.');
 const title = z.string().min(1).max(1000).refine(s => s.trim().length > 0, 'Title cannot be blank.');
@@ -101,3 +102,4 @@ export const tools = [
   { name: 'delete_event', description: 'Delete using current version. Repeated events need occurrence_start; defaults to this occurrence. Meetings with attendees cannot be deleted.', schema: z.strictObject({ ...eventRef, ...edit, scope }), destructive: true, mutation: true },
   { name: 'reschedule_event', description: 'Move an event preserving duration and alerts, checking conflicts before saving. Default rejects conflicts across all calendars; allow only when overlapping is intended. For recurring scopes, conflict check covers the selected moved occurrence only and reports that boundary.', schema: eventRange(z.strictObject({ ...eventRef, ...edit, start: timestamp, end: timestamp.optional(), time_zone: timeZone.optional(), scope, alarm_policy: notificationFields.alarm_policy, conflict_policy: z.enum(['reject', 'allow']).default('reject'), calendar_ids: z.array(id).min(1).max(100).optional() })), mutation: true, destructive: true },
 ];
+tools.push(...extensionTools({ id, title, timestamp, version, write, edit, paging, timeZone, eventFields, reminderFields, notificationFields, scope, patch, reminderRules, eventRange, planRange, planningRange, preferenceFields }));

@@ -1,5 +1,8 @@
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const binary = process.env.APPLE_HELPER_BRIDGE_PATH || fileURLToPath(new URL('../bin/eventkit-bridge', import.meta.url));
 const children = new Set();
@@ -28,22 +31,25 @@ export function invokeBridge(operation, args, { signal } = {}) {
 
 function execute(operation, args, signal) {
   return new Promise((resolve, reject) => {
-    const isWrite = /^(create|update|delete|reschedule|reconcile|prune)_/.test(operation);
+    const composite = ['batch_update', 'apply_plan'].includes(operation);
+    const isWrite = composite || /^(create|update|delete|reschedule|reconcile|prune|undo)_/.test(operation);
     const failure = message => Object.assign(new Error(message), {
       code: isWrite ? 'RESULT_UNKNOWN' : 'BRIDGE_ERROR',
       ...(isWrite ? { details: { request_id: args.request_id, next_step: 'Inspect get_operation and current item state. Do not retry under a new request ID.' } } : {}),
     });
     if (process.platform !== 'darwin') return reject(new Error('This MCP requires macOS 14 or later.'));
-    const child = spawn(binary, [], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const cancelDir = composite ? mkdtempSync(join(tmpdir(), 'apple-helper-cancel-')) : undefined;
+    const cancelFile = cancelDir && join(cancelDir, 'cancelled');
+    const child = spawn(binary, [], { stdio: ['pipe', 'pipe', 'pipe'], ...(cancelFile ? { env: { ...process.env, APPLE_HELPER_CANCEL_FILE: cancelFile } } : {}) });
     children.add(child);
     // Once a write starts, let its durable journal finish. Cancellation is not rollback.
-    const abort = () => { if (!isWrite) child.kill('SIGTERM'); };
+    const abort = () => { if (cancelFile) writeFileSync(cancelFile, ''); else if (!isWrite) child.kill('SIGTERM'); };
     signal?.addEventListener('abort', abort, { once: true });
     let stdout = '', stderr = '', failed = false;
     const timeout = setTimeout(() => {
       failed = true; child.kill('SIGKILL');
       reject(failure('EventKit request timed out. Check macOS permission dialogs. If this was a write, query current state before retrying; it may already have succeeded.'));
-    }, operation === 'request_access' ? 120000 : 45000);
+    }, operation === 'request_access' || composite ? 120000 : 45000);
     child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
     child.stdout.on('data', data => {
       stdout += data;
@@ -55,6 +61,7 @@ function execute(operation, args, signal) {
     child.on('close', code => {
       clearTimeout(timeout); children.delete(child);
       signal?.removeEventListener('abort', abort);
+      if (cancelDir) rmSync(cancelDir, { recursive: true, force: true });
       if (failed) return;
       if (code !== 0) return reject(failure(`EventKit bridge exited (${code}). ${stderr}`));
       try {

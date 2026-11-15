@@ -30,8 +30,10 @@ final class Bridge {
     }
     func operationKey(_ id: String) -> String { "operation:" + id }
     func execute(_ op: String, _ args: [String: Any]) async throws -> [String: Any] {
-        let mutations = ["create_event", "update_event", "delete_event", "create_reminder", "update_reminder", "delete_reminder", "update_preferences", "reschedule_event", "reconcile_operation", "prune_operations"]
+        if op == "batch_update" || op == "apply_plan" { return try await executeBatch(op, args) }
+        let mutations = ["create_event", "update_event", "delete_event", "create_reminder", "update_reminder", "delete_reminder", "update_preferences", "reschedule_event", "reconcile_operation", "prune_operations", "create_calendar", "update_calendar", "delete_calendar", "create_reminder_list", "update_reminder_list", "delete_reminder_list", "create_task_event", "undo_operation"]
         guard mutations.contains(op) else { return try await run(op, args) }
+        writeAttempted = false
         let id = try required(args, "request_id")
         let hash = try fingerprint(["tool": op, "arguments": args])
         try state.begin()
@@ -50,7 +52,12 @@ final class Bridge {
                 }
                 throw BridgeError("RESULT_UNKNOWN", "This request was already started. It will not be executed again. Use get_operation and query the item before any new write.", ["request_id": id])
             }
-            let record: [String: Any] = ["request_id": id, "tool": op, "fingerprint": hash, "status": "pending", "created_at": iso.string(from: Date()), "arguments": args, "owner_pid": ProcessInfo.processInfo.processIdentifier]
+            if op == "undo_operation" { try claimUndo(args) }
+            store.reset()
+            let undo: [String: Any]
+            do { undo = try undoSnapshot(op, args) }
+            catch { undo = ["supported": false, "reason": "Snapshot unavailable; the operation will still perform its normal validation."] }
+            let record: [String: Any] = ["request_id": id, "tool": op, "fingerprint": hash, "status": "pending", "created_at": iso.string(from: Date()), "arguments": args, "owner_pid": ProcessInfo.processInfo.processIdentifier, "undo": undo]
             try state.set(operationKey(id), record)
             try state.commit() // durable BEFORE any EventKit side effect
         } catch { state.rollback(); throw error }
@@ -71,6 +78,7 @@ final class Bridge {
             try state.begin()
             do {
                 var record = try state.get(operationKey(id))!
+                if op == "undo_operation" && !writeAttempted { try releaseUndoClaim(args) }
                 record["status"] = writeAttempted ? "uncertain" : "failed"
                 record["error"] = reported.data; record["finished_at"] = iso.string(from: Date())
                 try state.set(operationKey(id), record); try state.commit()
@@ -118,9 +126,9 @@ final class Bridge {
         return c
     }
     func containerData(_ c: EKCalendar) -> [String: Any] {
-        ["id": c.calendarIdentifier, "name": c.title, "source": c.source.title,
+        versioned(["id": c.calendarIdentifier, "name": c.title, "source": c.source.title, "source_id": c.source.sourceIdentifier, "color": colorHex(c.cgColor), "immutable": c.isImmutable,
          "writable": c.allowsContentModifications, "subscribed": c.isSubscribed,
-         "is_system_default": c.calendarIdentifier == (c.allowedEntityTypes.contains(.event) ? store.defaultCalendarForNewEvents?.calendarIdentifier : store.defaultCalendarForNewReminders()?.calendarIdentifier)]
+         "is_system_default": c.calendarIdentifier == (c.allowedEntityTypes.contains(.event) ? store.defaultCalendarForNewEvents?.calendarIdentifier : store.defaultCalendarForNewReminders()?.calendarIdentifier)], modified: nil)
     }
     func preferences() throws -> [String: Any] {
         let saved = try state.get("preferences") ?? [:]
@@ -360,7 +368,7 @@ final class Bridge {
             // Reminders reuses the active reminder ID for the next recurrence and writes
             // the completed occurrence under a separate ID. Verify both observations.
             let list = try calendar(expected["list_id"] as! String, .reminder)
-            let history = await fetchReminders([list], completed: true)
+            let history = try await fetchReminders([list], completed: true)
             let keys = ["list_id", "title", "notes", "completed", "priority", "due_at", "due_date"]
             let matches = history.filter { item in
                 guard let completedAt = item.completionDate, completedAt >= saveStarted.addingTimeInterval(-3) else { return false }
@@ -400,13 +408,16 @@ final class Bridge {
         try verify(expected, actual, keys: keys)
         return actual
     }
-    func fetchReminders(_ containers: [EKCalendar]?, completed: Bool? = nil) async -> [EKReminder] {
+    func fetchReminders(_ containers: [EKCalendar]?, completed: Bool? = nil) async throws -> [EKReminder] {
         let predicate: NSPredicate
         if completed == true { predicate = store.predicateForCompletedReminders(withCompletionDateStarting: nil, ending: nil, calendars: containers) }
         else if completed == false { predicate = store.predicateForIncompleteReminders(withDueDateStarting: nil, ending: nil, calendars: containers) }
         else { predicate = store.predicateForReminders(in: containers) }
-        return await withCheckedContinuation { continuation in
-            store.fetchReminders(matching: predicate) { continuation.resume(returning: $0 ?? []) }
+        return try await withCheckedThrowingContinuation { continuation in
+            store.fetchReminders(matching: predicate) { items in
+                guard let items else { continuation.resume(throwing: BridgeError("FETCH_FAILED", "EventKit could not read reminders. No empty snapshot was recorded.")); return }
+                continuation.resume(returning: items)
+            }
         }
     }
     func checkReminderDuplicate(_ r: EKReminder, _ a: [String: Any]) async throws {
@@ -427,6 +438,21 @@ final class Bridge {
         if !matches.isEmpty { throw BridgeError("DUPLICATE_FOUND", "An event with this title and time already exists. Use allow_duplicate=true only for an intentional additional copy.", ["ids": matches.compactMap { $0.eventIdentifier }]) }
     }
     func run(_ op: String, _ a: [String: Any]) async throws -> [String: Any] {
+        #if TESTING
+        if op == "update_reminder", let title = ProcessInfo.processInfo.environment["APPLE_HELPER_TEST_FAIL_ONCE_TITLE"], a["title"] as? String == title,
+           let path = ProcessInfo.processInfo.environment["APPLE_HELPER_TEST_FAIL_ONCE_FILE"], FileManager.default.fileExists(atPath: path) {
+            try FileManager.default.removeItem(atPath: path)
+            throw BridgeError("TEST_TRANSIENT", "Injected failure before any write.")
+        }
+        #endif
+        if op == "undo_operation" { return try await undoOperation(a) }
+        if op == "plan_tasks" { return try planTasks(a) }
+        if op == "get_plan" { return try getPlan(required(a, "plan_id")) }
+        if op == "create_task_event" { return try await createTaskEvent(a) }
+        if op == "check_conflicts" { return try checkConflicts(a) }
+        if op == "get_statistics" { return try await statistics(a) }
+        if op == "get_changes" { return try await changes(a) }
+        if ["list_sources", "create_calendar", "update_calendar", "delete_calendar", "create_reminder_list", "update_reminder_list", "delete_reminder_list"].contains(op) { return try containerOperation(op, a) }
         if op == "get_agenda" { return try await agenda(a) }
         if op == "find_free_slots" { return try freeSlots(a) }
         if op == "reconcile_operation" { return try reconcile(a) }
@@ -473,7 +499,7 @@ final class Bridge {
             return ["items": store.calendars(for: entity).map(containerData)]
         case "list_reminders":
             let containers = try (a["list_id"] as? String).map { [try calendar($0, .reminder)] }
-            let reminders = await fetchReminders(containers, completed: a["completed"] as? Bool)
+            let reminders = try await fetchReminders(containers, completed: a["completed"] as? Bool)
             let completed = a["completed"] as? Bool
             let after = try (a["due_after"] as? String).map(date)
             let before = try (a["due_before"] as? String).map(date)

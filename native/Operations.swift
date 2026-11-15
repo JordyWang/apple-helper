@@ -15,8 +15,8 @@ extension Bridge {
         let args = record["arguments"] as? [String: Any] ?? [:]
         var observation: [String: Any] = [:]
         if conclusion == "observed_applied" {
-            let isReminder = tool.contains("reminder")
-            guard tool.contains("event") || isReminder else { throw BridgeError("EVIDENCE_REQUIRED", "For non-item operations, use abandoned with an explanation after checking state.") }
+            let isReminder = ["create_reminder", "update_reminder", "delete_reminder"].contains(tool)
+            guard ["create_event", "create_task_event", "update_event", "reschedule_event", "delete_event"].contains(tool) || isReminder else { throw BridgeError("EVIDENCE_REQUIRED", "For non-item operations, use abandoned with an explanation after checking state.") }
             try requireAccess(isReminder ? .reminder : .event)
             if tool.hasPrefix("delete_") {
                 do {
@@ -34,7 +34,9 @@ extension Bridge {
                     observation = ["kind": "current_item_matches", "item": current]
                 } else {
                     let e = try event(ref); let current = eventData(e); try checkVersion(current, ref)
-                    try applyEvent(e, args)
+                    var intended = args
+                    if tool == "create_task_event" { intended["calendar_id"] = args["destination_calendar_id"] }
+                    try applyEvent(e, intended)
                     var keys = ["calendar_id", "title", "notes", "location", "start", "end", "all_day", "url", "alarms", "recurrence_rules", "availability"]
                     if current["all_day"] as? Bool == false { keys.append("time_zone") }
                     try verify(eventData(e), current, keys: keys)
@@ -56,7 +58,7 @@ extension Bridge {
         let cutoff = iso.string(from: before)
         let count = Int(try state.sql("SELECT COUNT(*) FROM records WHERE " + predicate, [cutoff]).first ?? "0") ?? 0
         if !dryRun {
-            try state.sql("UPDATE records SET value = json_set(json_remove(value,'$.arguments','$.result','$.error','$.resolution','$.owner_pid'),'$.compacted_at',?) WHERE " + predicate, [iso.string(from: Date()), cutoff])
+            try state.sql("UPDATE records SET value = json_set(json_remove(value,'$.arguments','$.result','$.error','$.resolution','$.owner_pid','$.undo','$.steps'),'$.compacted_at',?) WHERE " + predicate, [iso.string(from: Date()), cutoff])
         }
         return ["eligible_count": count, "compacted_count": dryRun ? 0 : count, "dry_run": dryRun, "before": cutoff, "request_ids_retained": true]
     }

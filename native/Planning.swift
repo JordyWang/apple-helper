@@ -68,8 +68,7 @@ extension Bridge {
         let (start, end, cal) = try planningRange(a)
         let events = try planningEvents(start, end, a["calendar_ids"] as? [String])
         let lists = try selectedCalendars(a["reminder_list_ids"] as? [String], .reminder)
-        let predicate = store.predicateForIncompleteReminders(withDueDateStarting: nil, ending: nil, calendars: lists)
-        let reminders: [EKReminder] = await withCheckedContinuation { continuation in store.fetchReminders(matching: predicate) { continuation.resume(returning: $0 ?? []) } }
+        let reminders = try await fetchReminders(lists, completed: false)
         var rows: [(Date, String, [String: Any])] = events.map { e in
             (e.startDate, "event:\(e.eventIdentifier ?? ""):\(e.startDate.timeIntervalSince1970)", ["kind": "event", "category": "scheduled", "item": eventData(e)])
         }
@@ -93,7 +92,7 @@ extension Bridge {
         result["counts"] = Dictionary(grouping: rows, by: { $0.2["category"] as! String }).mapValues(\.count)
         return result
     }
-    func freeSlots(_ a: [String: Any]) throws -> [String: Any] {
+    func freeSlots(_ a: [String: Any], unpaginated: Bool = false) throws -> [String: Any] {
         let (start, end, cal) = try planningRange(a)
         guard end <= recurrenceHorizon() else { throw BridgeError("RECURRENCE_HORIZON", "Availability planning is supported up to 10 years ahead; far-future repeated events may not expand reliably.") }
         let prefs = try state.get("preferences") ?? [:]
@@ -119,7 +118,7 @@ extension Bridge {
             }
             day = cal.date(byAdding: .day, value: 1, to: day)!
         }
-        var result = page(windows, a)
+        var result = unpaginated ? ["items": windows, "total": windows.count, "next_offset": null] as [String: Any] : page(windows, a)
         result["time_zone"] = cal.timeZone.identifier; result["duration_minutes"] = duration
         result["work_hours"] = hours; result["all_day_policy"] = a["all_day_policy"] ?? "block"; result["buffer_minutes"] = buffer / 60
         result["blocking_event_count"] = blocking.count; result["busy_intervals"] = busy.map { ["start": value(max(start, $0.start)), "end": value(min(end, $0.end))] }

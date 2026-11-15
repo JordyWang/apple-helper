@@ -25,3 +25,22 @@ test('cancelled queued writes never start; already started writes finish journal
     assert.equal(await readFile(log, 'utf8'), 'create_event\n');
   } finally { delete process.env.APPLE_HELPER_BRIDGE_PATH; await rm(dir, { recursive: true, force: true }); }
 });
+
+test('active batch cancellation signals a checkpoint and lets the current write finish', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'apple-helper-batch-cancel-'));
+  const binary = join(dir, 'bridge'), started = join(dir, 'started');
+  try {
+    await writeFile(binary, `#!${process.execPath}\nconst fs=require('node:fs');process.stdin.resume();process.stdin.on('end',()=>{const file=process.env.APPLE_HELPER_CANCEL_FILE;fs.writeFileSync(${JSON.stringify(started)},file);const timer=setInterval(()=>{if(fs.existsSync(file)){clearInterval(timer);process.stdout.write(JSON.stringify({ok:true,data:{cancelled:true,current_write_finished:true,cancel_file:file}}))}},5)});\n`, { mode: 0o700 });
+    process.env.APPLE_HELPER_BRIDGE_PATH = binary;
+    const { invokeBridge } = await import(`../src/bridge.js?batch=${Date.now()}`);
+    const controller = new AbortController();
+    const pending = invokeBridge('batch_update', { request_id: 'batch' }, { signal: controller.signal });
+    for (let i = 0; ; i++) {
+      try { await access(started); break; } catch { if (i > 300) throw new Error('Fake batch did not start'); await new Promise(r => setTimeout(r, 10)); }
+    }
+    controller.abort();
+    const result = await pending;
+    assert.equal(result.cancelled, true); assert.equal(result.current_write_finished, true);
+    await assert.rejects(access(result.cancel_file), { code: 'ENOENT' });
+  } finally { delete process.env.APPLE_HELPER_BRIDGE_PATH; await rm(dir, { recursive: true, force: true }); }
+});

@@ -32,4 +32,4 @@
 
 ## 日志压缩
 
-只有用户要求维护日志时，先 `preview_operation_prune({before})` 查看范围，再 `prune_operations({request_id,before})`。它清除旧终结记录的正文，保留请求 ID、指纹与状态；未解决记录保留。压缩后的重放返回 `RESULT_PRUNED`，不能换 ID 重做原操作。需要当前结果时查询真实事项。
+只有用户要求维护日志时，先 `preview_operation_prune({before})` 查看范围，再 `prune_operations({request_id,before})`。它清除旧终结记录的正文及撤销快照，保留请求 ID、指纹与状态；未解决记录保留。压缩后的记录不能撤销，重放返回 `RESULT_PRUNED`，不能换 ID 重做原操作。需要当前结果时查询真实事项。

@@ -18,7 +18,7 @@ async function connection(t, invoke) {
 test('MCP exposes all tools with read and destructive annotations', async t => {
   const client = await connection(t, async () => ({}));
   const { tools: listed } = await client.listTools();
-  assert.equal(listed.length, 25);
+  assert.equal(listed.length, 40);
   assert.equal(listed.find(x => x.name === 'list_events').annotations.readOnlyHint, true);
   assert.equal(listed.find(x => x.name === 'delete_reminder').annotations.destructiveHint, true);
   assert.ok(listed.find(x => x.name === 'create_event').inputSchema.required.includes('request_id'));
@@ -46,6 +46,25 @@ test('advanced schemas validate recurrence combinations and complete planning in
     assert.equal(schema('create_event').safeParse({ ...base, recurrence }).success, false);
   }
   assert.equal(schema('find_free_slots').safeParse({ start: base.start, end: base.end, duration_minutes: 30, work_hours: { days: [1, 2, 3, 4, 5], start: '09:00', end: '18:00' } }).success, true);
+});
+
+test('extension schemas reject ambiguous batch items and incomplete destructive scope', () => {
+  const schema = name => tools.find(x => x.name === name).schema;
+  const version = 'a'.repeat(64), request_id = 'extensions';
+  const item = { key: 'one', kind: 'reminder', id: 'r', expected_version: version, changes: { completed: true } };
+  assert.equal(schema('batch_update').safeParse({ request_id, items: [item] }).success, true);
+  for (const items of [[item, item], [item, { ...item, key: 'two' }], [{ ...item, changes: {} }], [{ ...item, changes: { due_at: null, due_date: null } }], [{ ...item, expected_version: undefined }]]) {
+    assert.equal(schema('batch_update').safeParse({ request_id, items }).success, false);
+  }
+  const deletion = { request_id, id: 'calendar', expected_version: version };
+  assert.equal(schema('delete_calendar').safeParse(deletion).success, false);
+  assert.equal(schema('delete_calendar').safeParse({ ...deletion, delete_contents: true }).success, true);
+  assert.equal(schema('undo_operation').parse({ request_id, target_request_id: 'original', expected_operation_version: version }).allow_recreate, false);
+  const range = { start: '2028-08-01T09:00:00+08:00', end: '2028-08-01T18:00:00+08:00' };
+  assert.equal(schema('plan_tasks').safeParse({ ...range, tasks: [{ reminder_id: 'r' }, { reminder_id: 'r' }] }).success, false);
+  assert.equal(schema('get_changes').safeParse({ page_token: 'frozen:10' }).success, true);
+  assert.equal(schema('get_changes').safeParse({ ...range, page_token: 'frozen:10' }).success, false);
+  assert.equal(schema('get_changes').safeParse({ ...range, offset: 10 }).success, false);
 });
 
 test('MCP cancellation reaches the tool handler AbortSignal', async t => {
