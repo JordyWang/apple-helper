@@ -5,4 +5,5 @@
   <key>CFBundleName</key><string>Apple Helper MCP</string>
   <key>NSCalendarsFullAccessUsageDescription</key><string>按你的指令查询、新建、修改和删除日历日程。</string>
   <key>NSRemindersFullAccessUsageDescription</key><string>按你的指令查询、新建、修改、完成和删除提醒事项。</string>
+  <key>NSAppleEventsUsageDescription</key><string>按你的指令查询、新建、修改、移动和删除 Apple 备忘录及文件夹。</string>
 </dict></plist>

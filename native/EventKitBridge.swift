@@ -31,7 +31,7 @@ final class Bridge {
     func operationKey(_ id: String) -> String { "operation:" + id }
     func execute(_ op: String, _ args: [String: Any]) async throws -> [String: Any] {
         if op == "batch_update" || op == "apply_plan" { return try await executeBatch(op, args) }
-        let mutations = ["create_event", "update_event", "delete_event", "create_reminder", "update_reminder", "delete_reminder", "update_preferences", "reschedule_event", "reconcile_operation", "prune_operations", "create_calendar", "update_calendar", "delete_calendar", "create_reminder_list", "update_reminder_list", "delete_reminder_list", "create_task_event", "undo_operation"]
+        let mutations = ["create_event", "update_event", "delete_event", "create_reminder", "update_reminder", "delete_reminder", "update_preferences", "reschedule_event", "reconcile_operation", "prune_operations", "create_calendar", "update_calendar", "delete_calendar", "create_reminder_list", "update_reminder_list", "delete_reminder_list", "create_task_event", "undo_operation", "create_note", "update_note", "append_note", "move_note", "delete_note", "create_note_folder", "update_note_folder", "delete_note_folder"]
         guard mutations.contains(op) else { return try await run(op, args) }
         writeAttempted = false
         let id = try required(args, "request_id")
@@ -438,6 +438,7 @@ final class Bridge {
         if !matches.isEmpty { throw BridgeError("DUPLICATE_FOUND", "An event with this title and time already exists. Use allow_duplicate=true only for an intentional additional copy.", ["ids": matches.compactMap { $0.eventIdentifier }]) }
     }
     func run(_ op: String, _ a: [String: Any]) async throws -> [String: Any] {
+        if op.hasSuffix("_note") || op == "list_notes" || op.contains("_note_") { return try await NotesAdapter(bridge: self).run(op, a) }
         #if TESTING
         if op == "update_reminder", let title = ProcessInfo.processInfo.environment["APPLE_HELPER_TEST_FAIL_ONCE_TITLE"], a["title"] as? String == title,
            let path = ProcessInfo.processInfo.environment["APPLE_HELPER_TEST_FAIL_ONCE_FILE"], FileManager.default.fileExists(atPath: path) {
@@ -457,7 +458,7 @@ final class Bridge {
         if op == "find_free_slots" { return try freeSlots(a) }
         if op == "reconcile_operation" { return try reconcile(a) }
         if op == "preview_operation_prune" || op == "prune_operations" { return try prune(a, dryRun: op == "preview_operation_prune") }
-        if op == "get_status" { return ["calendar": status(.event), "reminders": status(.reminder), "time_zone": TimeZone.current.identifier] }
+        if op == "get_status" { return ["calendar": status(.event), "reminders": status(.reminder), "notes": NotesPermission.status(), "time_zone": TimeZone.current.identifier] }
         if op == "get_preferences" { return try preferences() }
         if op == "get_operation" {
             guard let record = try state.get(operationKey(required(a, "request_id"))) else { throw BridgeError("NOT_FOUND", "Operation not found.") }
@@ -488,9 +489,10 @@ final class Bridge {
         }
         if op == "request_access" {
             let target = a["target"] as? String ?? "both"
-            if target == "both" || target == "calendar" { _ = try await store.requestFullAccessToEvents() }
-            if target == "both" || target == "reminders" { _ = try await store.requestFullAccessToReminders() }
-            return ["calendar": status(.event), "reminders": status(.reminder)]
+            if ["both", "all", "calendar"].contains(target) { _ = try await store.requestFullAccessToEvents() }
+            if ["both", "all", "reminders"].contains(target) { _ = try await store.requestFullAccessToReminders() }
+            if target == "notes" || target == "all" { _ = try await NotesAdapter(bridge: self).run("request_notes_access", [:]) }
+            return ["calendar": status(.event), "reminders": status(.reminder), "notes": NotesPermission.status()]
         }
         let entity: EKEntityType = op.contains("reminder") ? .reminder : .event
         try requireAccess(entity)

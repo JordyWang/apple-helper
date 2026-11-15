@@ -28,5 +28,22 @@ func runNativeTests() {
     precondition(windows.count == 2 && windows[0].start == date("2027-01-01T12:00:00Z") && windows[0].end == date("2027-01-01T13:00:00Z") && windows[1].end == end)
     precondition(freeWindows(start: start, end: end, busy: [BusyInterval(start: start, end: end)], minimum: 1800).isEmpty)
     print("Native DST, interval merge, clipping and minimum-duration tests: PASS")
+    precondition(notesHTML("<script> & \"quoted\"\n\nend").contains("&lt;script&gt; &amp; &quot;quoted&quot;"))
+    precondition(notesHTML("a\r\nb").components(separatedBy: "\n").count == 2)
+    precondition(!notesHasComplexHTML("<div>A checklist is text, not markup.</div>"))
+    precondition(notesHasComplexHTML("<table><tr><td>cell</td></tr></table>"))
+    precondition(notesHasComplexHTML("<ul class=\"Apple-dash-list\"><li>task</li></ul>"))
+    precondition(notesHasRichFormatting("<div><b>bold</b></div>"))
+    precondition(!notesHasRichFormatting("<div>&lt;b&gt;literal&lt;/b&gt;</div>"))
+    let noteVersionA: [String: Any] = ["id": "note", "title": "Title", "text": "text\n", "html": "<div>text<br></div>\n", "folder_id": "folder", "modified_at": "one"]
+    var noteVersionB = noteVersionA; noteVersionB["html"] = "<div>text</div>\n"; noteVersionB["modified_at"] = "two"
+    precondition(try! notesVersion(noteVersionA) == notesVersion(noteVersionB), "Notes normalization must not look like a user edit")
+    noteVersionB["html"] = "<div><b>text</b></div>"
+    precondition(try! notesVersion(noteVersionA) != notesVersion(noteVersionB), "Real formatting changes must invalidate the version")
+    noteVersionB = noteVersionA; noteVersionB["title"] = "User edit"
+    precondition(try! notesVersion(noteVersionA) != notesVersion(noteVersionB), "Title changes must invalidate the version")
+    noteVersionB = noteVersionA; noteVersionB["folder_id"] = "other"
+    precondition(try! notesVersion(noteVersionA) != notesVersion(noteVersionB), "Movement must invalidate the version")
+    print("Native Notes escaping, newline normalization and structured-content guards: PASS")
 }
 #endif

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { extensionTools } from './extensions.js';
+import { notesTools } from './notes-tools.js';
 
 const id = z.string().min(1).max(2048).describe('Use a returned ID, never a guessed name.');
 const title = z.string().min(1).max(1000).refine(s => s.trim().length > 0, 'Title cannot be blank.');
@@ -76,8 +77,8 @@ const planRange = s => eventRange(s).refine(a => Date.parse(a.end) - Date.parse(
 const evidence = z.strictObject({ kind: z.enum(['event', 'reminder']), id, occurrence_start: timestamp.optional(), expected_version: version });
 
 export const tools = [
-  { name: 'get_status', description: 'Check macOS permissions and timezone.', schema: z.strictObject({}), readOnly: true },
-  { name: 'request_access', description: 'Request macOS full access; may display a system permission dialog.', schema: z.strictObject({ target: z.enum(['calendar', 'reminders', 'both']).default('both') }) },
+  { name: 'get_status', description: 'Check Calendar/Reminders permissions, Notes Automation availability and Mac timezone. Notes not_running does not mean permission was denied.', schema: z.strictObject({}), readOnly: true },
+  { name: 'request_access', description: 'Request macOS Calendar/Reminders full access or Notes Automation access; may display a system permission dialog. both retains Calendar+Reminders scope; all also includes Notes.', schema: z.strictObject({ target: z.enum(['calendar', 'reminders', 'both', 'notes', 'all']).default('both') }) },
   { name: 'get_preferences', description: 'Read saved user preferences, effective defaults, system default calendar/list, and preference version. Does not invent preferences.', schema: z.strictObject({}), readOnly: true },
   { name: 'update_preferences', description: 'Persist only preferences explicitly chosen by the user. Null resets a field. Requires current preference version and a request ID.', schema: patch(z.strictObject({ ...preferenceFields, ...edit }), Object.keys(preferenceFields)), destructive: true, mutation: true },
   { name: 'get_operation', description: 'Look up a durable write record by request_id, including result or failure. Pending/uncertain means inspect current item state before a new write; never blindly retry under a new ID.', schema: z.strictObject({ request_id: requestId }), readOnly: true },
@@ -103,3 +104,4 @@ export const tools = [
   { name: 'reschedule_event', description: 'Move an event preserving duration and alerts, checking conflicts before saving. Default rejects conflicts across all calendars; allow only when overlapping is intended. For recurring scopes, conflict check covers the selected moved occurrence only and reports that boundary.', schema: eventRange(z.strictObject({ ...eventRef, ...edit, start: timestamp, end: timestamp.optional(), time_zone: timeZone.optional(), scope, alarm_policy: notificationFields.alarm_policy, conflict_policy: z.enum(['reject', 'allow']).default('reject'), calendar_ids: z.array(id).min(1).max(100).optional() })), mutation: true, destructive: true },
 ];
 tools.push(...extensionTools({ id, title, timestamp, version, write, edit, paging, timeZone, eventFields, reminderFields, notificationFields, scope, patch, reminderRules, eventRange, planRange, planningRange, preferenceFields }));
+tools.push(...notesTools({ id, title, write, edit, create, paging, patch }));

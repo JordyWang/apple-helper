@@ -18,11 +18,34 @@ async function connection(t, invoke) {
 test('MCP exposes all tools with read and destructive annotations', async t => {
   const client = await connection(t, async () => ({}));
   const { tools: listed } = await client.listTools();
-  assert.equal(listed.length, 40);
+  assert.equal(listed.length, 52);
   assert.equal(listed.find(x => x.name === 'list_events').annotations.readOnlyHint, true);
   assert.equal(listed.find(x => x.name === 'delete_reminder').annotations.destructiveHint, true);
   assert.ok(listed.find(x => x.name === 'create_event').inputSchema.required.includes('request_id'));
   assert.equal(listed.find(x => x.name === 'create_event').inputSchema.required.includes('calendar_id'), false);
+  assert.equal(listed.find(x => x.name === 'append_note').annotations.idempotentHint, true);
+  assert.equal(listed.find(x => x.name === 'delete_note_folder').annotations.destructiveHint, true);
+});
+
+test('Notes schemas enforce versions, single destinations and explicit formatting scope', async t => {
+  const schema = name => tools.find(x => x.name === name).schema;
+  const base = { request_id: 'notes', id: 'note-id', expected_version: 'a'.repeat(64) };
+  assert.equal(schema('request_access').parse({ target: 'notes' }).target, 'notes');
+  assert.equal(schema('request_access').parse({}).target, 'both');
+  assert.equal(schema('create_note').safeParse({ request_id: 'n', title: '中文', body_text: '<literal> & "quotes"\n第二行' }).success, true);
+  assert.equal(schema('create_note').safeParse({ request_id: 'n', title: 'two\nlines' }).success, false);
+  assert.equal(schema('create_note').safeParse({ request_id: 'n', title: 'x', folder_id: 'f', account_id: 'a' }).success, false);
+  assert.equal(schema('list_notes').safeParse({ search_in: 'script' }).success, false);
+  assert.equal(schema('append_note').safeParse({ ...base, text: '' }).success, false);
+  assert.equal(schema('append_note').safeParse({ ...base, expected_version: undefined, text: 'x' }).success, false);
+  assert.equal(schema('update_note').safeParse(base).success, false);
+  assert.equal(schema('update_note').parse({ ...base, body_text: '' }).allow_format_loss, false);
+  assert.equal(schema('delete_note_folder').parse(base).delete_contents, false);
+  let received;
+  const client = await connection(t, async (name, args) => { received = { name, args }; return { id: 'note', text: args.text }; });
+  const literal = '中文\n"quoted" \\ $(shell) `literal` <script>data</script>';
+  const result = await client.callTool({ name: 'append_note', arguments: { ...base, text: literal } });
+  assert.equal(result.structuredContent.text, literal); assert.equal(received.args.text, literal);
 });
 
 test('validation rejects malformed dates, zones, empty patches, and unknown fields', () => {

@@ -32,7 +32,7 @@ export function invokeBridge(operation, args, { signal } = {}) {
 function execute(operation, args, signal) {
   return new Promise((resolve, reject) => {
     const composite = ['batch_update', 'apply_plan'].includes(operation);
-    const isWrite = composite || /^(create|update|delete|reschedule|reconcile|prune|undo)_/.test(operation);
+    const isWrite = composite || /^(create|update|delete|reschedule|reconcile|prune|undo|append|move)_/.test(operation);
     const failure = message => Object.assign(new Error(message), {
       code: isWrite ? 'RESULT_UNKNOWN' : 'BRIDGE_ERROR',
       ...(isWrite ? { details: { request_id: args.request_id, next_step: 'Inspect get_operation and current item state. Do not retry under a new request ID.' } } : {}),
@@ -48,7 +48,7 @@ function execute(operation, args, signal) {
     let stdout = '', stderr = '', failed = false;
     const timeout = setTimeout(() => {
       failed = true; child.kill('SIGKILL');
-      reject(failure('EventKit request timed out. Check macOS permission dialogs. If this was a write, query current state before retrying; it may already have succeeded.'));
+      reject(failure('macOS request timed out. Check system permission dialogs. If this was a write, query current state before retrying; it may already have succeeded.'));
     }, operation === 'request_access' || composite ? 120000 : 45000);
     child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
     child.stdout.on('data', data => {
@@ -57,13 +57,13 @@ function execute(operation, args, signal) {
     });
     child.stderr.on('data', data => { stderr = (stderr + data).slice(-4000); });
     child.stdin.on('error', () => {});
-    child.on('error', error => { clearTimeout(timeout); signal?.removeEventListener('abort', abort); children.delete(child); failed = true; reject(new Error(`Cannot start EventKit bridge; run npm run build. ${error.message}`)); });
+    child.on('error', error => { clearTimeout(timeout); signal?.removeEventListener('abort', abort); children.delete(child); failed = true; reject(new Error(`Cannot start native bridge; run npm run build. ${error.message}`)); });
     child.on('close', code => {
       clearTimeout(timeout); children.delete(child);
       signal?.removeEventListener('abort', abort);
       if (cancelDir) rmSync(cancelDir, { recursive: true, force: true });
       if (failed) return;
-      if (code !== 0) return reject(failure(`EventKit bridge exited (${code}). ${stderr}`));
+      if (code !== 0) return reject(failure(`Native bridge exited (${code}). ${stderr}`));
       try {
         const result = JSON.parse(stdout);
         if (!result.ok) return reject(Object.assign(new Error(`${result.error.code}: ${result.error.message}`), result.error));

@@ -1,0 +1,14 @@
+interface:
+  display_name: "Apple 备忘录"
+  short_description: "搜索与管理本机 Apple 备忘录，保留内容格式并衔接待办和日程"
+  default_prompt: "使用 $apple-notes 查找最近的会议纪要，整理其中尚未完成的待办。"
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "apple-helper"
+      description: "本机 Apple 日历、提醒事项与备忘录 MCP"
+      transport: "stdio"
+
+policy:
+  allow_implicit_invocation: true

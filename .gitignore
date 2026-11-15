@@ -7,3 +7,4 @@ bin/
 .advanced-test-state.json
 
 .extensions-test-state.json
+.notes-test-state.json

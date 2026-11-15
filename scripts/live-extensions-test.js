@@ -31,7 +31,7 @@ const native = (operation, args, env = {}) => JSON.parse(execFileSync(join(root,
 let client;
 try {
   client = await connect();
-  assert.equal((await client.listTools()).tools.length, 40);
+  assert.equal((await client.listTools()).tools.length, 52);
   assert.ok((await call(client, 'list_sources')).items.length);
   let calendar = await call(client, 'create_calendar', { ...request(), name: `${marker} calendar`, color: '#336699' });
   let list = await call(client, 'create_reminder_list', { ...request(), name: `${marker} reminders`, color: '#669933' });

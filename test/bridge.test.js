@@ -4,7 +4,7 @@ import { mkdtemp, writeFile, readFile, rm, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-test('cancelled queued writes never start; already started writes finish journaling', async () => {
+for (const operation of ['create_event', 'append_note', 'move_note']) test(`cancelled queued writes never start; active ${operation} finishes journaling`, async () => {
   const dir = await mkdtemp(join(tmpdir(), 'apple-helper-cancel-'));
   const binary = join(dir, 'bridge'); const started = join(dir, 'started'); const gate = join(dir, 'release'); const log = join(dir, 'log');
   try {
@@ -12,7 +12,7 @@ test('cancelled queued writes never start; already started writes finish journal
     process.env.APPLE_HELPER_BRIDGE_PATH = binary;
     const { invokeBridge } = await import(`../src/bridge.js?test=${Date.now()}`);
     const activeController = new AbortController();
-    const active = invokeBridge('create_event', { request_id: 'active' }, { signal: activeController.signal });
+    const active = invokeBridge(operation, { request_id: 'active' }, { signal: activeController.signal });
     for (let i = 0; ; i++) {
       try { await access(started); break; } catch { if (i > 300) throw new Error('Fake bridge did not start'); await new Promise(r => setTimeout(r, 10)); }
     }
@@ -22,7 +22,7 @@ test('cancelled queued writes never start; already started writes finish journal
     queuedController.abort(); activeController.abort();
     await writeFile(gate, '');
     assert.equal((await active).finished, true); await cancelled;
-    assert.equal(await readFile(log, 'utf8'), 'create_event\n');
+    assert.equal(await readFile(log, 'utf8'), `${operation}\n`);
   } finally { delete process.env.APPLE_HELPER_BRIDGE_PATH; await rm(dir, { recursive: true, force: true }); }
 });
 

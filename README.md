@@ -1,6 +1,6 @@
 # Apple Helper MCP
 
-本地 macOS MCP 服务，使用 Apple 原生 EventKit 操作提醒事项和日历，支持增删改查。通过标准 stdio 接入 Codex，也可配置到支持本地 MCP 的其他客户端。服务不监听网络端口，不需要 Apple ID 密码或 API Key；日历和提醒事项仍会按系统账户设置同步，工具返回的数据会交给调用它的 AI 客户端。
+本地 macOS MCP 服务，使用 Apple 原生 EventKit 操作提醒事项和日历，通过系统自动化接口操作备忘录。通过标准 stdio 接入 Codex，也可配置到支持本地 MCP 的其他客户端。服务不监听网络端口，不需要 Apple ID 密码或 API Key；数据仍会按各应用账户设置同步，工具返回的数据会交给调用它的 AI 客户端。
 
 ## 已实现
 
@@ -8,8 +8,9 @@
 | --- | --- | --- | --- | --- |
 | 提醒事项 | 列表、ID、关键词、完成状态、到期范围、分页 | 标题、备注、日期、优先级、通知 | 内容、日期、完成/未完成、移动列表 | 按 ID 删除 |
 | 日程 | 日历、ID、日期范围、关键词、分页、重复事件实例 | 普通和全天日程 | 内容、起止时间、地点、时区、移动日历 | 按 ID 和指定实例删除 |
+| 备忘录 | 账户、文件夹、标题/正文搜索、分页、正文/HTML/附件元数据 | 标题与纯文本正文 | 改标题、替换正文、追加、移动文件夹 | 按 ID 删除，保留期由 Notes 管理 |
 
-当前版本 **1.3.0，共 40 个工具**：
+当前版本 **1.4.0，共 52 个工具**：
 
 - `get_status`、`request_access`
 - `get_preferences`、`update_preferences`、`get_operation`、`list_operations`
@@ -21,25 +22,72 @@
 - `batch_update`、`undo_operation`、`get_changes`、`get_statistics`
 - `list_sources`、`create_calendar`、`update_calendar`、`delete_calendar`
 - `create_reminder_list`、`update_reminder_list`、`delete_reminder_list`
+- `list_note_accounts`、`list_note_folders`、`list_notes`、`get_note`
+- `create_note`、`update_note`、`append_note`、`move_note`、`delete_note`
+- `create_note_folder`、`update_note_folder`、`delete_note_folder`
 
 日历和提醒列表本身也支持新建、改名、改色及删除；删除容器会删除其中的全部内容。
 
-## 配套 Skill：apple-planner
+## 配套 Skill：apple-planner / apple-notes
 
-MCP 提供工具，配套 Skill 负责把自然语言需求组织成查询、规划、写入和核对流程，包括今日/本周概览、待办整理、寻找空闲时段、改期及完成任务。Skill 源码位于 `skills/apple-planner`，依赖本机 `apple-helper` MCP。
+MCP 提供工具，配套 Skill 负责把自然语言需求组织成查询、规划、写入和核对流程。`skills/apple-planner` 负责日程与待办，`skills/apple-notes` 负责备忘录。两者依赖本机 `apple-helper` MCP，可组合完成“会议纪要 → 提取待办 → 写入提醒/安排日程”。
 
 ```sh
 npm run install:skill
 ```
 
-该命令将技能安装到用户的 Codex skills 目录，默认允许按上下文自动使用；显式调用示例：
+该命令将两个技能安装到用户的 Codex skills 目录，保留被更新文件的备份，默认允许按上下文自动使用；显式调用示例：
 
 ```text
 $apple-planner 查看今天的日程和未完成事项，给我一份行动安排。
 $apple-planner 把明天下午两点的健身安排推迟一小时，保持原来的时长。
+$apple-notes 查找最近的会议纪要，整理其中尚未完成的待办。
+$apple-notes 在“项目记录”文件夹新建一篇备忘录，保存这份总结。
 ```
 
 技能只在对话任务中运行；每日自动执行需要另行明确设置自动化。默认列表和日历优先使用用户明确保存的偏好，再采用 macOS 系统默认值。
+
+## 1.4 Apple 备忘录
+
+新增 **12 个 Notes 工具**，包含笔记操作与文件夹管理。账户/文件夹 ID 来自 Notes 自己的接口，与日历 ID 不通用。`get_status` 增加 `notes: {installed,running,automation,native_code}`；Notes 未运行时返回 `not_running`，并不表示权限被拒绝。用 `request_access({target:"notes"})` 请求系统自动化权限。原来的 `both` 仍只指日历和提醒，`all` 才包含 Notes。
+
+### 搜索与读取
+
+- `list_note_accounts` 返回默认账户和各账户的默认文件夹；`list_note_folders` 返回完整层级关系、共享状态、直接包含的笔记/子文件夹数量及版本。
+- `list_notes` 可选 `folder_id` 或 `account_id`，按修改时间倒序并稳定排序分页；文件夹范围仅包含直接子笔记，账户范围覆盖该账户。`search_in: "title"` 为默认值，`"text"` 搜索完整纯文本。每次最多扫描 2,000 个候选项，超过时缩小账户/文件夹范围；分页不把第一页说成全部结果。
+- 列表仅返回摘要，用 `get_note({id})` 取得 `version`、完整 `text`、原始 `html` 和附件元数据。`text` 通常包含标题行。锁定笔记返回元数据，正文为 null，也不参加正文搜索；附件内容不导出。
+- Notes 枚举可能残留刚删除对象的引用，适配器只跳过已确认“对象不存在”的引用，其他读取错误继续报错。数据是本机已同步的观察，不保证跨设备原子快照。
+
+### 新建、修改、追加与移动
+
+```json
+{
+  "name": "create_note",
+  "arguments": {
+    "request_id": "a-new-unique-request-id",
+    "title": "项目讨论记录",
+    "body_text": "结论：本周完成原型。\n待办：整理需求并安排评审。"
+  }
+}
+```
+
+省略目标时使用 Notes 默认账户/文件夹；`account_id` 使用该账户默认文件夹，`folder_id` 指定具体目标，两者不能同传。同文件夹同标题的新建默认拒绝，明确需要额外一份才用 `allow_duplicate: true`。
+
+`title` 是单行标题，`body_text` 是标题之后的纯文本正文。输入 HTML/Markdown 作为字面文本保存，不执行脚本、不解释为任意 HTML。内部使用固定 AppleScript 源码和带类型的 Apple-event 参数传值，不拼接用户脚本；处理换行、缩进、制表符及 HTML 转义，并在写后核对实际纯文本。
+
+修改、追加、移动、删除都需要 `request_id` 和刚读取的 `expected_version`。`update_note` 只传 title 时保留原 HTML/正文（Notes 的独立标题字段可能与原正文首行不同）；传 body_text 则替换全部正文并生成标题行。替换富格式需 `allow_format_loss: true`，含附件的正文始终拒绝重写。`append_note` 在末尾追加并保留简单格式，拒绝表格、清单等复杂结构与附件，避免通过重新写入 HTML 损坏内容。
+
+`move_note` 接收目标 `folder_id`，移动后核对正文与目的地，返回最新 ID/版本；跨账户移动可能改变 ID，含附件的跨账户移动不支持。共享和锁定笔记只读；不支持附件增删改、表格/清单结构编辑、锁定/解锁和协作权限管理。
+
+### 文件夹、删除与恢复边界
+
+创建文件夹可指定 account_id 或 parent_folder_id；省略时使用默认账户。改名/删除需要 `list_note_folders` 返回的当前版本。非空文件夹删除需显式 `delete_contents: true`，覆盖全部后代；默认/共享文件夹受保护，也不能借删除父文件夹修改锁定或共享笔记。
+
+`delete_note` 核验笔记离开原文件夹；是否进入“最近删除”、何时永久删除，由 Notes 自身管理。工具不提供永久清空“最近删除”，也不把普通删除称为永久擦除。
+
+Notes 写入共享现有 SQLite 操作日志和跨进程请求去重，追加请求重放不会再次追加。写入后崩溃或核对失败返回 `RESULT_UNKNOWN`，先查 get_operation 和真实笔记，不能换 ID 盲目重做。Notes 不支持 `undo_operation`；现有 `batch_update`、`get_changes`、`get_statistics` 的范围仍为日历/提醒。调查不确定 Notes 操作后，可用 `reconcile_operation` 的 `abandoned` 记录说明，它不证明原操作失败或重做操作。
+
+Notes 版本基于正文、格式、标题、文件夹、保护/共享状态和附件元数据；忽略异步保存时间以及不影响纯文本的块末尾 HTML 换行规范化，避免把 Notes 后台整理误判为用户编辑。真正的文字、格式、标题或位置变化仍会拒绝旧版本写入。加密笔记即使在界面中临时解锁，本适配器也仅返回元数据。
 
 ## 1.3 任务排程、批量执行与变更追踪
 
@@ -171,7 +219,7 @@ npm run install:codex
 
 先调用 `get_status`。若不是 `full_access`，调用 `request_access`，并在系统弹窗中允许访问。系统设置 → 隐私与安全性 → 日历 / 提醒事项中，检查当前宿主（如 ChatGPT、Terminal）或 Apple Helper MCP 的权限。
 
-此服务使用 EventKit 的完整访问权限，与 AppleScript 的“自动化”权限不同。换客户端可能需要重新授权。服务不会修改 TCC 数据库或绕过系统授权。
+日历和提醒使用 EventKit 的完整访问权限；Notes 使用“隐私与安全性 → 自动化”中宿主对 Notes 的控制权限。换客户端可能需要重新授权。服务不会修改 TCC 数据库、绕过系统授权或直接读取 Notes 私有数据库。
 
 ## 调用示例
 
@@ -234,6 +282,7 @@ npm run test:priority # 独立偏好目录 + 真实 API：默认目标、多通�
 npm run test:native   # 夏令时、区间合并与空闲窗口算法
 npm run test:advanced # 重复范围、规划、冲突改期与日志恢复
 npm run test:extensions # 独立容器：任务计划、批量、撤销、差异、统计与容器管理
+npm run test:notes      # 专用 Notes 文件夹：搜索、编辑、追加、移动、删除、重放和崩溃保护
 ```
 
 实测脚本使用唯一标题和 2099 年的日期，只清理本次创建的 ID。需要已授权的可写列表及日历；当前测试样例以 `Asia/Shanghai` 为时区。若意外退出，`.test-state.json` 会保存已知测试 ID，可据此清理；该文件已被 Git 忽略。
@@ -241,6 +290,8 @@ npm run test:extensions # 独立容器：任务计划、批量、撤销、差异
 高优先级测试使用唯一标题查询并清理本次测试事项，`.priority-test-state.json` 保存故障时所需的标题与独立状态目录。故障注入只编译到 `bin/eventkit-test-bridge`；生产原生程序不包含故障注入分支。
 
 结构：`src/server.js` 注册 MCP 工具，`src/tools.js` 定义参数，`src/bridge.js` 调用原生程序，`native/EventKitBridge.swift` 执行 EventKit 操作并核对结果，`native/StateStore.swift` 用 SQLite 保存偏好及操作记录并跨进程串行化写入。输入通过 stdin JSON 传递，不拼接 shell 命令。编译产物在 `bin/`，依赖版本由 `package-lock.json` 固定。
+
+Notes 参数位于 `src/notes-tools.js`，适配器位于 `native/Notes.swift`，固定脚本位于 `native/NotesScripts.swift`。Notes 测试使用唯一命名的临时笔记/文件夹及隔离状态目录，失败时保留 `.notes-test-state.json`；检查该记录后用 `node scripts/live-notes-test.js --cleanup` 清理，处理范围仅限记录中的 ID 和唯一前缀，删除保留期遵循 Notes 的“最近删除”行为。
 
 参考：[Apple EventKit 文档](https://developer.apple.com/documentation/EventKit/EKEventStore)、[官方 MCP TypeScript SDK](https://ts.sdk.modelcontextprotocol.io/server)。
 
