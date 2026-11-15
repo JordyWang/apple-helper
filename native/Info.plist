@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleIdentifier</key><string>local.apple-helper.eventkit</string>
+  <key>CFBundleName</key><string>Apple Helper MCP</string>
+  <key>NSCalendarsFullAccessUsageDescription</key><string>按你的指令查询、新建、修改和删除日历日程。</string>
+  <key>NSRemindersFullAccessUsageDescription</key><string>按你的指令查询、新建、修改、完成和删除提醒事项。</string>
+</dict></plist>

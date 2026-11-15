@@ -1,0 +1,14 @@
+interface:
+  display_name: "Apple 日程与待办"
+  short_description: "通过本地 Apple 日历和提醒事项管理待办、规划时间并执行日程调整"
+  default_prompt: "使用 $apple-planner 查看今天的日程和未完成事项，给我一份行动安排。"
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "apple-helper"
+      description: "本机 Apple 日历与提醒事项 EventKit MCP"
+      transport: "stdio"
+
+policy:
+  allow_implicit_invocation: true

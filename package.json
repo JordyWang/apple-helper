@@ -1,0 +1,25 @@
+{
+  "name": "apple-helper-mcp",
+  "version": "1.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Local macOS Calendar and Reminders planning, recurrence and CRUD MCP server",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "node scripts/build.js",
+    "start": "node src/server.js",
+    "test": "node --test test/*.test.js",
+    "test:live": "node scripts/live-test.js",
+    "test:priority": "node scripts/build.js --test && node scripts/live-priority-test.js",
+    "install:codex": "node scripts/install-codex.js",
+    "install:skill": "node scripts/install-skill.js",
+    "test:native": "node scripts/build.js --test && bin/eventkit-test-bridge --self-test",
+    "test:advanced": "node scripts/build.js --test && node scripts/live-advanced-test.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "zod": "4.6.7"
+  }
+}
