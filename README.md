@@ -1,64 +1,277 @@
 # Apple Helper MCP
 
-本地 macOS MCP 服务，使用 Apple 原生 EventKit 操作提醒事项和日历，通过系统自动化接口操作备忘录。通过标准 stdio 接入 Codex，也可配置到支持本地 MCP 的其他客户端。服务不监听网络端口，不需要 Apple ID 密码或 API Key；数据仍会按各应用账户设置同步，工具返回的数据会交给调用它的 AI 客户端。
+通过自然语言操作 Mac 上的 **Apple 日历、提醒事项和备忘录**。当前版本 **v1.4.0，52 个 MCP 工具**。
 
-## 已实现
+服务使用标准 **stdio MCP**，不绑定 Codex 账号；Codex、Claude Code、WorkBuddy 等支持本地 stdio 的客户端都可以配置接入。客户端负责理解需求，MCP 负责查询、校验和执行操作。
 
-| 对象 | 查询 | 新建 | 修改 | 删除 |
-| --- | --- | --- | --- | --- |
-| 提醒事项 | 列表、ID、关键词、完成状态、到期范围、分页 | 标题、备注、日期、优先级、通知 | 内容、日期、完成/未完成、移动列表 | 按 ID 删除 |
-| 日程 | 日历、ID、日期范围、关键词、分页、重复事件实例 | 普通和全天日程 | 内容、起止时间、地点、时区、移动日历 | 按 ID 和指定实例删除 |
-| 备忘录 | 账户、文件夹、标题/正文搜索、分页、正文/HTML/附件元数据 | 标题与纯文本正文 | 改标题、替换正文、追加、移动文件夹 | 按 ID 删除，保留期由 Notes 管理 |
+日历与提醒事项通过 Apple EventKit 访问，备忘录通过 macOS 自动化接口访问。服务不监听网络端口，不要求提供 Apple ID 密码或 API Key；应用数据仍按账户设置同步，工具返回的内容会进入所使用 AI 客户端的上下文。
 
-当前版本 **1.4.0，共 52 个工具**：
+## 阅读导航
 
-- `get_status`、`request_access`
-- `get_preferences`、`update_preferences`、`get_operation`、`list_operations`
-- `reconcile_operation`、`preview_operation_prune`、`prune_operations`
-- `get_agenda`、`find_free_slots`、`get_event_series`、`reschedule_event`
-- `list_reminder_lists`、`list_reminders`、`get_reminder`、`create_reminder`、`update_reminder`、`delete_reminder`
-- `list_calendars`、`list_events`、`get_event`、`create_event`、`update_event`、`delete_event`
-- `plan_tasks`、`get_plan`、`apply_plan`、`check_conflicts`
-- `batch_update`、`undo_operation`、`get_changes`、`get_statistics`
-- `list_sources`、`create_calendar`、`update_calendar`、`delete_calendar`
-- `create_reminder_list`、`update_reminder_list`、`delete_reminder_list`
-- `list_note_accounts`、`list_note_folders`、`list_notes`、`get_note`
-- `create_note`、`update_note`、`append_note`、`move_note`、`delete_note`
-- `create_note_folder`、`update_note_folder`、`delete_note_folder`
+- [功能范围与限制](#功能范围与限制)
+- [完整工具目录](#完整工具目录)
+- [安装服务](#安装服务)
+- [各客户端接入](#各客户端接入)：[Codex](#codex)、[Claude Code](#claude-code)、[WorkBuddy](#workbuddy)
+- [首次授权与验证](#首次授权与验证)
+- [配套 Skill](#配套-skill)
+- [使用示例](#使用示例)
+- [写入与恢复约定](#写入与恢复约定)
+- [常见问题](#常见问题)
+- [更新与卸载](#更新与卸载)
+- [开发与测试](#开发与测试)
+- [高级操作参考](docs/advanced-usage.md)：重复规则、通知、批量操作、撤销、差异查询等详细语义
 
-日历和提醒列表本身也支持新建、改名、改色及删除；删除容器会删除其中的全部内容。
+## 功能范围与限制
 
-## 配套 Skill：apple-planner / apple-notes
+### 能操作什么
 
-MCP 提供工具，配套 Skill 负责把自然语言需求组织成查询、规划、写入和核对流程。`skills/apple-planner` 负责日程与待办，`skills/apple-notes` 负责备忘录。两者依赖本机 `apple-helper` MCP，可组合完成“会议纪要 → 提取待办 → 写入提醒/安排日程”。
+| 范围 | 支持的操作 |
+| --- | --- |
+| 日历事件 | 按日期、日历、关键词查询；新建、修改、删除；普通/全天事件、重复规则、多条时间通知、移动日历、改期并检查冲突 |
+| 提醒事项 | 按列表、关键词、完成状态、到期范围查询；新建、修改、完成/恢复未完成、删除；优先级、日期/时间、重复规则、多条时间通知、移动列表 |
+| 备忘录 | 列出账户和文件夹；标题/正文搜索与分页；读取纯文本、HTML、附件元数据；新建、改标题、替换正文、追加、移动、删除 |
+| 日历与提醒列表 | 查看账户来源；新建、改名、改色、删除整个容器 |
+| 备忘录文件夹 | 查看层级、创建顶层或嵌套文件夹、改名、删除 |
+| 规划与统计 | 日程/待办概览、空闲时段、冲突检查、将提醒排入日历、批量修改、有限撤销、变更查询、统计 |
+| 操作管理 | 查看权限、保存明确设置的偏好、查询操作结果、核对不确定写入、压缩旧日志 |
+
+访问范围是**当前 macOS 用户、已同步到本机且系统接口可访问的账户数据**。例如出现在 Apple 日历中的账户可能被 EventKit 暴露；本项目不直接调用 Google Calendar、Outlook 或其他厂商的云 API。实际读写能力取决于账户、容器权限和系统接口。
+
+### 当前不支持或有边界的能力
+
+| 范围 | 边界 |
+| --- | --- |
+| 操作系统与连接 | 服务须在 macOS 14+ 本机运行；不支持直接在 Windows/Linux/iOS 上运行；没有 HTTP/SSE 远程端点，不能直接配置为云端网页连接器 |
+| 其他 App | 未接入 Mail、Safari、通讯录、信息、Finder 等；不提供任意 AppleScript、Shell 或通用桌面控制工具 |
+| 日历 | 不编辑邀请/参会者；带参会者的会议可查询，但拒绝修改和删除；重复系列改期的冲突检查仅覆盖选定实例 |
+| 提醒事项 | 不编辑附件、子任务、旗标或定位提醒；设置到期日不会自动添加通知 |
+| 备忘录 | 共享笔记只读；加密笔记仅返回元数据，即使已在 Notes 界面临时解锁；不支持锁定/解锁、协作权限管理 |
+| 备忘录格式与附件 | 附件仅返回元数据；含附件的正文不能重写/追加。可改标题和同账户移动；含附件的跨账户移动不支持。富格式正文替换需显式允许格式丢失；追加拒绝表格、清单等复杂结构 |
+| 批量、撤销与变更 | `batch_update`、`get_changes`、`get_statistics` 只处理日历/提醒；Notes 不支持 `undo_operation`；日历/提醒的撤销也仅覆盖支持的普通单项操作 |
+| 删除与定时执行 | 删除日历/列表会删除其中全部内容；Notes 的删除保留期由“最近删除”决定。本服务不提供永久清空 Notes 回收区，也不自带定时任务调度器 |
+
+跨应用操作不构成原子事务。将提醒安排进日历不会自动完成提醒；从笔记提取任务也不会自动改写原笔记。更完整的边界见[高级操作参考](docs/advanced-usage.md)。
+
+## 完整工具目录
+
+以下分组互不重复，合计 **52 个**。客户端可能在工具名前附加服务器前缀；逻辑名称不变。具体参数以客户端取得的工具 schema 为准。
+
+| 分组 | 数量 | 工具 | 用途 |
+| --- | ---: | --- | --- |
+| 连接与偏好 | 4 | `get_status`、`request_access`、`get_preferences`、`update_preferences` | 查看/请求权限，读取/更新明确选择的默认偏好 |
+| 操作记录 | 5 | `get_operation`、`list_operations`、`reconcile_operation`、`preview_operation_prune`、`prune_operations` | 检查写入结果、记录核对结论、压缩日志 |
+| 日历事件 | 8 | `list_calendars`、`list_events`、`get_event`、`get_event_series`、`create_event`、`update_event`、`delete_event`、`reschedule_event` | 列表/详情、重复系列、事件增删改查和冲突改期 |
+| 提醒事项 | 6 | `list_reminder_lists`、`list_reminders`、`get_reminder`、`create_reminder`、`update_reminder`、`delete_reminder` | 列表/详情、增删改查；完成状态由 update 修改 |
+| 概览与排程 | 6 | `get_agenda`、`find_free_slots`、`plan_tasks`、`get_plan`、`apply_plan`、`check_conflicts` | 查忙闲、生成排程草案、执行草案、查冲突 |
+| 批量与分析 | 4 | `batch_update`、`undo_operation`、`get_changes`、`get_statistics` | 批量修改、有限撤销、差异和统计 |
+| 日历/列表容器 | 7 | `list_sources`、`create_calendar`、`update_calendar`、`delete_calendar`、`create_reminder_list`、`update_reminder_list`、`delete_reminder_list` | 账户来源与容器管理 |
+| 备忘录与文件夹 | 12 | `list_note_accounts`、`list_note_folders`、`list_notes`、`get_note`、`create_note`、`update_note`、`append_note`、`move_note`、`delete_note`、`create_note_folder`、`update_note_folder`、`delete_note_folder` | 账户、文件夹、笔记查询及写入 |
+
+工具定义位于 [src/tools.js](src/tools.js)、[src/extensions.js](src/extensions.js) 和 [src/notes-tools.js](src/notes-tools.js)。
+
+## 安装服务
+
+三个客户端共用同一份服务，先完成本节，再选择客户端配置。
+
+### 环境要求
+
+- macOS 14 或更新版本，Apple Silicon 或 Intel Mac。
+- Node.js 20 或更新版本，以及 npm。
+- Xcode Command Line Tools，能够执行 `xcrun swiftc`。尚未安装时运行 `xcode-select --install`，完成系统安装后继续。
+- 在对应 Apple 应用中配置好要访问的账户。
+
+### 下载与编译
 
 ```sh
-npm run install:skill
+git clone https://github.com/JordyWang/apple-helper.git
+cd apple-helper
+npm ci --ignore-scripts
+npm run build
 ```
 
-该命令将两个技能安装到用户的 Codex skills 目录，保留被更新文件的备份，默认允许按上下文自动使用；显式调用示例：
+构建产物为 `bin/eventkit-bridge`，需要在使用它的 Mac 上编译。仓库尚未提供 npm 公共安装包，不能用 `npx apple-helper-mcp` 代替上述步骤。
+
+在仓库根目录运行以下命令，取得配置中需要的两个**绝对路径**：
+
+```sh
+node -p 'process.execPath'
+node -p 'require("node:path").resolve("src/server.js")'
+```
+
+后续 JSON/TOML 示例中的 `/absolute/path/to/node` 和 `/absolute/path/to/apple-helper/src/server.js` 都是占位符，须替换成实际输出。路径含空格时，终端命令需加引号；JSON 的 `args` 则使用独立字符串。GUI 客户端未必继承终端的 PATH，因此优先使用 Node 的绝对路径。
+
+## 各客户端接入
+
+文档核对日期：**2026-11-18**。协议兼容不等于完成该客户端的端到端测试。
+
+| 客户端 | 接入方式 | 本项目验证状态 |
+| --- | --- | --- |
+| Codex | 一键脚本，或 `config.toml` | 已配置并实测 |
+| Claude Code，本地运行 | `claude mcp add`，或项目 `.mcp.json` | 官方支持所需协议；尚未完成客户端联调 |
+| WorkBuddy，Mac 客户端 | 自定义连接器中的 stdio MCP 配置 | 官方支持所需协议；尚未完成客户端联调 |
+| 其他本地 MCP 客户端 | 使用下方相同的 command/args，按客户端格式配置 | 须支持 stdio 与本地进程；未逐一验证 |
+
+### Codex
+
+已安装 Codex CLI 时，在仓库根目录执行：
+
+```sh
+npm run install:codex
+```
+
+脚本使用 `codex mcp add` 注册服务，写入 Node/服务器脚本的绝对路径，并设置启动超时 15 秒、工具调用超时 150 秒。已有配置会先备份，其他服务和权限策略保留。
+
+没有 CLI，或希望手动配置时，将下面的服务表合并到 `~/.codex/config.toml`；若设置了 `CODEX_HOME`，使用该目录内的 `config.toml`。同名服务表只能保留一份：
+
+```toml
+[mcp_servers.apple-helper]
+command = "/absolute/path/to/node"
+args = ["/absolute/path/to/apple-helper/src/server.js"]
+startup_timeout_sec = 15
+tool_timeout_sec = 150
+enabled = true
+```
+
+重新加载客户端的 MCP 连接，必要时重启客户端并开启新聊天。在 CLI 可用 `codex mcp list` 或会话内 `/mcp` 检查配置与连接，再按[首次授权与验证](#首次授权与验证)完成系统授权。配置格式见 [Codex 官方 MCP 文档](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)。
+
+### Claude Code
+
+完成服务构建并安装 Claude Code 后，在本仓库根目录执行：
+
+```sh
+claude mcp add --transport stdio --scope user apple-helper -- \
+  "$(node -p 'process.execPath')" "$(pwd)/src/server.js"
+```
+
+`--scope user` 表示该 Mac 用户的各项目可用。用 `claude mcp get apple-helper` 查看配置，进入 Claude Code 后用 `/mcp` 检查连接。若已有同名配置，先查看并按实际路径更新，不要重复添加。
+
+如果希望配置随某个项目管理，也可以在**要使用工具的项目根目录**创建或合并 `.mcp.json`，作为上述用户级注册的替代方式：
+
+```json
+{
+  "mcpServers": {
+    "apple-helper": {
+      "type": "stdio",
+      "command": "/absolute/path/to/node",
+      "args": ["/absolute/path/to/apple-helper/src/server.js"],
+      "timeout": 150000
+    }
+  }
+}
+```
+
+JSON 示例中的 `timeout` 是 Claude Code 的单次工具执行超时，单位毫秒。采用 CLI 注册时，也可用 `MCP_TOOL_TIMEOUT=150000 claude` 启动客户端设置全局工具超时；这是 **Claude Code 进程**的环境变量，不是服务端 `env` 参数。项目配置可能需要按客户端提示启用；绝对路径属于具体电脑，分享配置时应让每位使用者替换。
+
+注册、作用域及超时语义见 [Claude Code 官方 MCP 文档](https://code.claude.com/docs/en/mcp)。本项目通过标准 MCP SDK 验证工具协议，尚未在 Claude Code 中逐项联调。
+
+### WorkBuddy
+
+在已完成服务构建的同一台 Mac 上配置：
+
+1. 打开 WorkBuddy 左侧的“专家·技能·连接器”，切换到“连接器”。
+2. 点击右上角“自定义连接器”，进入 MCP 配置入口。
+3. 添加下面的配置并替换绝对路径。如果编辑的是包含其他服务的文件，只合并 `apple-helper` 条目；保留原有服务。
+4. 保存并连接。在新任务中启用该连接器，再执行[首次授权与验证](#首次授权与验证)。
+
+入口及启用方式见 [WorkBuddy 官方连接器说明](https://www.workbuddy.cn/docs/workbuddy/From-Beginner-to-Expert-Guide/Function-Description/Connector)。
+
+```json
+{
+  "mcpServers": {
+    "apple-helper": {
+      "type": "stdio",
+      "command": "/absolute/path/to/node",
+      "args": ["/absolute/path/to/apple-helper/src/server.js"]
+    }
+  }
+}
+```
+
+若界面分字段填写，名称填 `apple-helper`，传输方式选 `stdio`，命令填 Node 绝对路径，参数填 `src/server.js` 的绝对路径。这里不填写 URL、OAuth 或 API Key；系统访问权限在 Mac 本机授予。
+
+[WorkBuddy 官方 MCP 配置说明](https://open.workbuddy.cn/en/docs/connector)支持 `command` / `args` 启动本地进程。其 `timeout` 字段文档定义为**连接超时**，不能直接当作 Claude Code 的单次工具超时使用。较长批次如遇客户端超时，按[写入与恢复约定](#写入与恢复约定)核对结果。
+
+本节针对 WorkBuddy Mac 客户端的自定义连接器；项目尚未上架连接器商店。具体界面可能随版本调整，目前尚未完成 WorkBuddy 客户端联调。
+
+## 首次授权与验证
+
+MCP“已连接”只说明服务器进程能通信，不表示已经获得 Apple 应用权限。
+
+先在客户端中输入：
 
 ```text
-$apple-planner 查看今天的日程和未完成事项，给我一份行动安排。
-$apple-planner 把明天下午两点的健身安排推迟一小时，保持原来的时长。
-$apple-notes 查找最近的会议纪要，整理其中尚未完成的待办。
-$apple-notes 在“项目记录”文件夹新建一篇备忘录，保存这份总结。
+请调用 apple-helper 的 get_status，检查日历、提醒事项和备忘录权限，先不要新建或修改内容。
 ```
 
-技能只在对话任务中运行；每日自动执行需要另行明确设置自动化。默认列表和日历优先使用用户明确保存的偏好，再采用 macOS 系统默认值。
+按需调用 `request_access`，在 macOS 系统弹窗中允许对应访问：
 
-## 1.4 Apple 备忘录
+| target | 请求范围 |
+| --- | --- |
+| `calendar` | 日历完整访问 |
+| `reminders` | 提醒事项完整访问 |
+| `notes` | 控制 Notes 的自动化权限 |
+| `both`，默认值 | 日历 + 提醒事项 |
+| `all` | 日历 + 提醒事项 + Notes |
 
-新增 **12 个 Notes 工具**，包含笔记操作与文件夹管理。账户/文件夹 ID 来自 Notes 自己的接口，与日历 ID 不通用。`get_status` 增加 `notes: {installed,running,automation,native_code}`；Notes 未运行时返回 `not_running`，并不表示权限被拒绝。用 `request_access({target:"notes"})` 请求系统自动化权限。原来的 `both` 仍只指日历和提醒，`all` 才包含 Notes。
+例如，只接入备忘录时可说：“请调用 request_access，target 设为 notes，我会处理系统授权弹窗。”
 
-### 搜索与读取
+日历和提醒权限位于“系统设置 → 隐私与安全性 → 日历 / 提醒事项”；Notes 位于“自动化”中宿主对 Notes 的控制权限。换客户端、终端宿主或启动方式后可能需要重新授权。服务不修改 TCC 数据库，也不绕过系统授权。
 
-- `list_note_accounts` 返回默认账户和各账户的默认文件夹；`list_note_folders` 返回完整层级关系、共享状态、直接包含的笔记/子文件夹数量及版本。
-- `list_notes` 可选 `folder_id` 或 `account_id`，按修改时间倒序并稳定排序分页；文件夹范围仅包含直接子笔记，账户范围覆盖该账户。`search_in: "title"` 为默认值，`"text"` 搜索完整纯文本。每次最多扫描 2,000 个候选项，超过时缩小账户/文件夹范围；分页不把第一页说成全部结果。
-- 列表仅返回摘要，用 `get_note({id})` 取得 `version`、完整 `text`、原始 `html` 和附件元数据。`text` 通常包含标题行。锁定笔记返回元数据，正文为 null，也不参加正文搜索；附件内容不导出。
-- Notes 枚举可能残留刚删除对象的引用，适配器只跳过已确认“对象不存在”的引用，其他读取错误继续报错。数据是本机已同步的观察，不保证跨设备原子快照。
+授权后先进行只读检查：
 
-### 新建、修改、追加与移动
+```text
+请列出 apple-helper 可用的日历、提醒列表和备忘录文件夹，并说明哪些可写；不要创建测试事项。
+```
+
+日历/提醒预期权限为 `full_access`，Notes 为 `authorized`。Notes 的 `not_running` 只表示应用尚未运行，不等于权限被拒绝。客户端可加载的完整工具集合应为 52 个；若客户端过滤或按需加载工具，界面同时显示的数量可能更少。
+
+## 配套 Skill
+
+**MCP 是执行接口，Skill 是使用这些工具的工作流说明。** 不安装 Skill 也能调用全部工具；安装 Skill 不会代替 MCP 注册、系统授权或扩展底层能力。
+
+| Skill | 用途 |
+| --- | --- |
+| [apple-planner](skills/apple-planner/SKILL.md) | 今日/本周安排、待办整理、空闲时段、任务排程、改期、完成事项与结果核对 |
+| [apple-notes](skills/apple-notes/SKILL.md) | 笔记搜索、编辑/追加、文件夹管理、内容保护及与待办/日程的衔接 |
+
+**Codex**：在仓库根目录运行 `npm run install:skill`。默认安装至 `~/.codex/skills`，支持 `CODEX_HOME`，更新已有文件时保留备份。可显式输入 `$apple-planner` 或 `$apple-notes`。
+
+**Claude Code**：官方支持 `~/.claude/skills/<名称>/SKILL.md`。首次安装可在仓库根目录执行以下命令；`-n` 保留已有文件，因此已有同名技能时应先备份再人工合并更新：
+
+```sh
+mkdir -p "$HOME/.claude/skills"
+cp -R -n skills/apple-planner skills/apple-notes "$HOME/.claude/skills/"
+```
+
+通过 `/apple-planner`、`/apple-notes` 使用，详见 [Claude Code 官方 Skills 文档](https://code.claude.com/docs/en/skills)。仓库中的 `agents/openai.yaml` 是 Codex 元数据，不能代替 Claude Code 的 MCP 配置；保留 `references/` 目录以供技能读取。
+
+**WorkBuddy**：可以先连接 MCP 并直接使用自然语言。官方提供“技能 → 添加技能 → 上传技能”入口导入本地技能包；若自行打包本仓库的技能，应保留各自的 `SKILL.md` 和 `references/`（如有），按界面要求选择包格式，见[官方技能说明](https://www.workbuddy.cn/docs/workbuddy/From-Beginner-to-Expert-Guide/Function-Description/Skills-Market)。当前没有专用安装脚本或已验证的 WorkBuddy 技能包，导入与自动调用仍需验证；`npm run install:skill` 只安装到 Codex。
+
+Skill 在对话任务中工作。每天执行、周期报告等需求，需要另行配置客户端支持的自动化。
+
+## 使用示例
+
+以下自然语言可用于任一已连接并授权的客户端，无需记住工具名：
+
+```text
+查看今天的日程和未完成提醒，区分今日截止、逾期和无日期待办。
+
+在工作日历里找明天下午连续 45 分钟的空闲时段，先给出候选时间。
+
+把“整理需求”安排到明天下午的空闲时间，时长 30 分钟，并提前 10 分钟通知。
+
+把周五的“项目评审”推迟一小时，保留时长和通知，检查是否与其他安排冲突。
+
+在备忘录中搜索标题包含“项目讨论”的笔记，先列出匹配项和所在文件夹。
+
+在“项目记录”文件夹新建一篇“本周总结”，正文是：完成原型，下一步整理反馈。
+
+把这段补充内容追加到刚才那篇备忘录末尾，保留已有内容。
+```
+
+同名匹配多项时，结合日期、账户和文件夹定位。找不到唯一目标时先澄清；“提取笔记中的待办”与“将待办写入提醒事项”是不同操作。
+
+MCP 调用示例，新建备忘录：
 
 ```json
 {
@@ -71,230 +284,105 @@ $apple-notes 在“项目记录”文件夹新建一篇备忘录，保存这份�
 }
 ```
 
-省略目标时使用 Notes 默认账户/文件夹；`account_id` 使用该账户默认文件夹，`folder_id` 指定具体目标，两者不能同传。同文件夹同标题的新建默认拒绝，明确需要额外一份才用 `allow_duplicate: true`。
+请求 ID 仅为示例，每个新动作应生成新的 ID。省略目标时，Notes 使用其默认账户/文件夹；日历/提醒优先使用明确保存的偏好，再使用系统默认值。Notes 的 `body_text` 不包含标题行，读取返回的 `text` 通常包含标题行。
 
-`title` 是单行标题，`body_text` 是标题之后的纯文本正文。输入 HTML/Markdown 作为字面文本保存，不执行脚本、不解释为任意 HTML。内部使用固定 AppleScript 源码和带类型的 Apple-event 参数传值，不拼接用户脚本；处理换行、缩进、制表符及 HTML 转义，并在写后核对实际纯文本。
+更多字段及时间示例见[高级操作参考](docs/advanced-usage.md)。
 
-修改、追加、移动、删除都需要 `request_id` 和刚读取的 `expected_version`。`update_note` 只传 title 时保留原 HTML/正文（Notes 的独立标题字段可能与原正文首行不同）；传 body_text 则替换全部正文并生成标题行。替换富格式需 `allow_format_loss: true`，含附件的正文始终拒绝重写。`append_note` 在末尾追加并保留简单格式，拒绝表格、清单等复杂结构与附件，避免通过重新写入 HTML 损坏内容。
+## 写入与恢复约定
 
-`move_note` 接收目标 `folder_id`，移动后核对正文与目的地，返回最新 ID/版本；跨账户移动可能改变 ID，含附件的跨账户移动不支持。共享和锁定笔记只读；不支持附件增删改、表格/清单结构编辑、锁定/解锁和协作权限管理。
+- **请求去重**：新建、修改、删除应用数据等受日志保护的写入需要唯一 `request_id`；同一动作重试使用相同 ID 和完全相同参数，不会重复追加或创建。新动作或修正参数才使用新 ID。排程草案、快照等内部状态工具的参数以各自 schema 为准。
+- **版本检查**：修改/删除前读取目标，把当前 `version` 作为 `expected_version`。文件夹和容器的版本来自列表；重复日程还需要实例时间与操作范围。
+- **写后核对**：成功写入会读回关键字段并返回 `operation.verified: true`。`replayed: true` 是历史成功结果，需要当前状态时应再次查询。
+- **不确定结果**：超时、崩溃或 `RESULT_UNKNOWN` 不代表失败。先用 `get_operation` 和真实对象核对，不能换 ID 盲目再写一遍。取消或关闭客户端也不等于回滚。
+- **批量与撤销**：批量可能部分成功，必须查看每项状态；撤销依赖支持的快照，不能恢复所有格式和字段，恢复删除会产生新 ID。删除整个容器及 Notes 操作不支持撤销。
+- **删除范围**：删除日历/提醒列表必须传 `delete_contents: true`，包含所有内容；删除非空 Notes 文件夹也需要该字段，覆盖全部后代，默认/共享文件夹受保护。
+- **时间与分页**：时间戳携带时区偏移或 Z；全天事件采用 Mac 当地午夜，结束日期不包含在内。普通分页跟随 `next_offset`；变更查询使用专用游标和 `page_token`。
 
-### 文件夹、删除与恢复边界
+版本检查依据本机已同步状态，不是跨设备原子比较并交换。日志与 Apple 应用无法组成同一事务；服务会保留不确定记录并阻止盲目重放。
 
-创建文件夹可指定 account_id 或 parent_folder_id；省略时使用默认账户。改名/删除需要 `list_note_folders` 返回的当前版本。非空文件夹删除需显式 `delete_contents: true`，覆盖全部后代；默认/共享文件夹受保护，也不能借删除父文件夹修改锁定或共享笔记。
+偏好、操作日志、撤销快照、排程草案和变更快照默认保存在：
 
-`delete_note` 核验笔记离开原文件夹；是否进入“最近删除”、何时永久删除，由 Notes 自身管理。工具不提供永久清空“最近删除”，也不把普通删除称为永久擦除。
-
-Notes 写入共享现有 SQLite 操作日志和跨进程请求去重，追加请求重放不会再次追加。写入后崩溃或核对失败返回 `RESULT_UNKNOWN`，先查 get_operation 和真实笔记，不能换 ID 盲目重做。Notes 不支持 `undo_operation`；现有 `batch_update`、`get_changes`、`get_statistics` 的范围仍为日历/提醒。调查不确定 Notes 操作后，可用 `reconcile_operation` 的 `abandoned` 记录说明，它不证明原操作失败或重做操作。
-
-Notes 版本基于正文、格式、标题、文件夹、保护/共享状态和附件元数据；忽略异步保存时间以及不影响纯文本的块末尾 HTML 换行规范化，避免把 Notes 后台整理误判为用户编辑。真正的文字、格式、标题或位置变化仍会拒绝旧版本写入。加密笔记即使在界面中临时解锁，本适配器也仅返回元数据。
-
-## 1.3 任务排程、批量执行与变更追踪
-
-| 能力 | 工具 | 行为 |
-| --- | --- | --- |
-| 待办排程 | `plan_tasks`、`get_plan`、`apply_plan` | 先生成可查看的草案，执行时重新核对提醒版本和日历冲突，保留待办与日程关联 |
-| 冲突盘点 | `check_conflicts` | 检查范围内的忙碌日程，包含展开后的重复实例，返回冲突双方及重叠区间 |
-| 批量修改 | `batch_update` | 最多 50 项，逐项版本校验和持久化结果，可停止或在明确失败后继续 |
-| 撤销 | `undo_operation` | 使用操作前快照还原支持的单项操作；防止覆盖后续修改 |
-| 增量查询 | `get_changes` | 固定查询范围的快照差异，稳定分页，7 天游标有效期 |
-| 容器管理 | `list_sources` 与日历/列表增删改工具 | 选择账户、新建、改名、改色、删除整个容器 |
-| 统计 | `get_statistics` | 完成、到期、逾期待办，以及日程计划时长、合并占用时长和按日汇总 |
-
-### 任务草案与执行
-
-`plan_tasks` 接收明确的 `start` / `end`、`tasks: [{reminder_id,duration_minutes?,earliest_start?,deadline?}]`，以及可选目标日历、待检查日历、工作时间、缓冲和默认时长。时长与工作时间可来自已保存偏好；缺少必要值会报错。默认按截止日期、优先级排序，也可选择 `order: "priority_then_deadline"`。日期型到期日以规划时区的次日午夜为截止；明确的任务 `deadline` 优先。
-
-草案只保存在本机，不修改 Calendar/Reminders；返回 `assignments` 和逐项 `unscheduled` 原因，不拆分任务或自动改动原约会。已完成或已有有效关联日程的提醒会跳过。草案有效期 7 天；`get_plan` 返回草案版本和当前关联日程，已删除的关联标记为 `missing`。
-
-执行调用 `apply_plan({request_id,plan_id,expected_plan_version})`，每一步会检查源提醒版本、时段是否仍在未来以及所选日历中的冲突。新事件写入目标日历；提醒保持未完成。目标日历始终参与冲突检查。默认遇到明确失败停止，可设置 `on_error: "continue"`；结果不确定时始终停止。
-
-### 批量与重试
-
-`batch_update` 每项提供稳定的 `key`、`kind: "event"|"reminder"`、`id`、`expected_version` 和 `changes`；重复事件还需实例时间与范围，移动目标写在 `changes.calendar_id` / `changes.list_id` 中。它不是整体原子事务，也不自动检查改期冲突；需要避让时先查空闲或逐项使用 `reschedule_event`。`batch_update` 和 `apply_plan` 都返回每项的子请求 ID、状态与结果，并汇总成功、失败、未启动和不确定数量；`status: "partial"` 不能报告为全部成功。
-
-以**相同父请求 ID 和完全相同参数**重试会跳过成功项，只有确认没有开始写入的失败项才会启用新的子尝试。变更参数需新的父请求 ID，仍须重新读取有关事项。取消后让当前一步完成日志，再停止后续步骤；取消不等于回滚。发生 pending / uncertain 时先调查子请求和真实事项，不能通过新 ID 绕过保护。即使用另一个父请求执行同一草案，已成功的步骤也不会重复创建。
-
-### 撤销范围
-
-先 `get_operation({request_id: 原请求ID})`，再向 `undo_operation` 提供新请求 ID、`target_request_id` 和读取的 `expected_operation_version`。支持普通日程/提醒的新建、修改、删除及偏好修改；批量父记录不直接撤销，可针对成功子请求逐项操作。
-
-修改或新建后的对象若又被编辑，会拒绝撤销。恢复删除需显式 `allow_recreate: true`，会创建**新 ID**，只恢复接口支持的字段，不承诺附件、子任务等完整备份。重复事项、单次例外、带参会者的会议、富通知、容器删除、旧版本无快照记录和已压缩记录不支持撤销。撤销在真正写入前持久化占用标记，保存后崩溃也不会允许另一次撤销重复恢复。
-
-### 差异、冲突与统计口径
-
-- `get_changes` 首次返回基线；事件限定 `[start,end)`，提醒涵盖所选列表的全部到期日期。按 `next_page_token` 单独传 `page_token` 读完冻结报告，最后一页才返回新的 `cursor`。下一次使用相同范围、时区和容器参数加该游标；`limit` 可以改变。仅支持 `limit` 与令牌分页，不接受 offset。游标或报告过期返回 `CURSOR_EXPIRED`，需新基线，不假装没有变化。
-- 差异包括 added / updated / removed；removed 只说明离开查询范围，也可能是移动、改期或原生 ID 改变，不等同于删除。单个快照最多 10,000 项；提醒读取失败不会记录空快照。查询是本机同步状态的观察，不是跨应用原子快照或实时推送。
-- `check_conflicts` 排除 free 和取消事项，默认包含全天占用，可选择忽略。`buffer_minutes` 表示要求的最小间隔，因此冲突区间可包含缓冲不足的部分；最多返回 10,000 对，范围最多 366 天。冲突和差异查询支持未来 10 年以内。
-- `get_statistics` 区分日程计划时长总和与忙碌区间合并后的占用分钟，重叠事件只在后者去重；全天日程按数量统计。完成数按 `completed_at` 落在范围内计算，到期数按到期日计算，逾期数相对于 `as_of`（默认当前时间）。`total_open` / `undated_open` 覆盖所选列表，不限日期。按请求时区分日；日程时长不代表实际工作时长，也不保证能恢复历史上已删除的完成事项。
-
-### 日历与列表管理
-
-创建使用 `name`，可选 `color: "#336699"`、`source_id`；省略账户时使用系统默认容器所属账户。`list_sources` 返回账户 ID，具体创建能力仍由账户提供方决定。同账户同名新建默认拒绝。修改和删除需从 `list_calendars` / `list_reminder_lists` 取得最新版本。删除必须传 `delete_contents: true`，表示用户要求删除整个容器及所有内容，**包含此前未查询到的未来和重复事项**；只读或不可修改的系统容器拒绝操作。
-
-## 1.2 规划、重复事项与恢复
-
-- **统一概览**：`get_agenda` 在一个原生请求中返回指定时间段的日程和未完成提醒，分为 `scheduled`、`due`、`overdue`、`undated`。可指定多个 `calendar_ids` / `reminder_list_ids`；日期型待办按规划时区解释。结果按时间分页，`counts` 和 `total` 覆盖完整查询范围。
-- **寻找空闲**：`find_free_slots` 合并所有选定日历的忙碌区间，支持前后缓冲、工作日、工作时间、时长及 IANA 时区。参数优先于已保存偏好，缺少工作时间或时长时明确报错。返回可用窗口和窗口内第一段建议时间，跟随 `next_offset` 获取后续窗口。`availability: free` 和已取消事件不占用；默认全天事件占用，可显式选 `all_day_policy: ignore`。提醒事项本身不占用日历时间。
-- **改期并查冲突**：`reschedule_event` 默认在全部日历检查拟议时段，冲突时写入前返回 `SCHEDULE_CONFLICT`。允许重叠时显式传 `conflict_policy: allow`。保留原时长与通知；全天事项按日历天数保持长度，跨夏令时仍为午夜边界。重复系列的冲突检查只覆盖此次移动的实例，响应中的 `conflict_checked_scope` 会说明范围。
-- **原生重复规则**：日程、提醒的创建和修改支持 `recurrence`，频率为 daily / weekly / monthly / yearly，支持间隔、星期、月内日期（含负数倒数）、月份、序号筛选、按次数或截止时间结束；省略结束条件为无限重复。`recurrence: null` 清除规则。提醒须有到期日期。完成重复提醒时，返回已完成的历史项及系统生成的 `next_occurrence`。
-- **系列范围**：`scope: this` 修改单次并保留其他实例；`future` 修改本次及以后；`all` 从当前系列的首个实例开始。使用 `all` 前调用 `get_event_series`，把其 `version` 传为 `expected_version`，不能拿任意单次版本替代。修改现有重复规则使用 future / all；后续修改可能产生新 ID 或例外，但仍由 EventKit 维护系列关系；操作范围按 `get_event_series` 返回的首项和规则确定，不根据标题推断。
-- **异常收尾**：`get_operation` 增加记录 `version`。检查真实事项后，`reconcile_operation` 接收独立 `request_id`、`target_request_id`、`expected_operation_version`、`conclusion` 和说明 `note`。`observed_applied` 需提供刚读取的 `evidence: {kind, id, expected_version, occurrence_start?}`，并核对当前内容；删除则检查原引用不存在。`abandoned` 仅关闭调查，不断言成功或失败。结论明确为当前观察，不是历史执行的原子证明；整个过程不重做原写入。仍存活的原进程不能被提前收尾。
-- **日志维护**：先用 `preview_operation_prune({before})` 查看数量，再显式调用 `prune_operations({request_id,before})` 压缩此前已终结记录的参数与结果。未解决的 pending / uncertain 会保留。请求 ID、指纹和状态永久保留，压缩后重放返回 `RESULT_PRUNED`，绝不重新执行。日志不会自行按时间删除。
-- **取消与查询效率**：已取消的排队任务不会启动；已经开始的写入继续完成日志，取消不等于撤销。队列有容量和等待期限。提醒完成状态使用原生查询条件，普通列表先分页再序列化，规划工具减少多轮工具调用。
-
-重复规则示例（每周一、三，共 8 次；ISO 星期一为 1）：
-
-```json
-{"frequency":"weekly","interval":1,"days_of_week":[{"day":1},{"day":3}],"count":8}
+```text
+~/Library/Application Support/Apple Helper MCP/state.sqlite3
 ```
 
-每月最后一天：`{"frequency":"monthly","days_of_month":[-1]}`。每月第二个星期二：`{"frequency":"monthly","days_of_week":[{"day":2,"week":2}]}`。`count` 与 `until` 互斥，`until` 为带偏移的时间戳。服务返回完整 `recurrence_rules`；系统可能把单次例外转为无独立规则的事项，拆分后段时自动调整剩余次数。
+目录/文件权限为 700/600。多个客户端在同一 macOS 用户下默认共享这些偏好和记录；设置 `APPLE_HELPER_DATA_DIR` 可切换为独立状态目录，但不会隔离 Apple 应用数据，跨目录也不共享请求去重记录。删除状态库会失去历史去重和恢复信息，不是卸载连接的必要步骤。
 
-行为采用 [Apple EventKit 重复规则](https://developer.apple.com/documentation/eventkit/creating-a-recurring-event) 和 [原生实例查询](https://developer.apple.com/documentation/eventkit/retrieving-events-and-reminders)。当前 Mac 实测 2099 年的重复系列只展开首项，因此服务将新重复规则的首项和空闲规划限制在未来 10 年内；超出该范围的日程列表/概览返回 `warnings`，不能推断完整忙闲。普通单次事项仍可查询和创建。该 10 年范围是应用的保守支持范围，不是对 EventKit 极限的断言。
+## 常见问题
 
-## 1.1 高优先级功能
+| 现象 | 检查方式 |
+| --- | --- |
+| 客户端提示找不到 node | 使用 `node -p 'process.execPath'` 的绝对路径；GUI 的 PATH 可能与终端不同 |
+| 原生程序不存在或架构不符 | 在当前 Mac 的仓库根目录重新执行 `npm ci --ignore-scripts` 和 `npm run build` |
+| MCP 已连接，但无法访问应用 | 通过该客户端调用 `get_status`，按目标执行 `request_access` 并处理系统弹窗 |
+| Notes 返回 `not_running` | 尚未启动 Notes，不是权限拒绝；按 Notes 授权流程继续 |
+| 运行 `npm start` 后没有页面 | 正常：它在等待 stdio MCP 消息，不是网页服务器；由客户端启动即可 |
+| 只有旧工具，或缺少 Notes 工具 | 确认服务器路径指向更新后的仓库，重新加载 MCP 连接，检查工具过滤设置 |
+| `VERSION_CONFLICT` | 目标已改变；重新读取、比较变更和原意，再决定是否写入 |
+| `DUPLICATE_FOUND` | 查看已有同名/同时间事项；仅在明确需要额外副本时使用 `allow_duplicate` |
+| Notes 报格式或附件限制 | 不用全量重写绕过限制；在 Notes 中编辑复杂内容，或明确授权另建笔记 |
+| Notes 搜索 `QUERY_TOO_LARGE` | 一次最多 2,000 个候选项，缩小到账户/文件夹；分页不绕过候选数量限制 |
+| 写入超时或 `RESULT_UNKNOWN` | 保留原请求 ID，核对操作日志与当前对象；不要立即换 ID 重试 |
+| 无法写入特定账户/容器 | 查看系统返回的可写状态；账户出现在列表中不保证允许所有操作 |
 
-- **默认目标与偏好**：`get_preferences` 返回系统默认、明确保存的偏好和有效值。`update_preferences` 支持默认列表/日历、时区、常用日程时长、工作日与工作时间；传 `null` 重置。没有明确设置时，不虚构工作时间或常用时长。新建时省略目标 ID 会使用有效默认值；配置的目标失效时会报错，不悄悄换账户。
-- **通知**：日程和提醒支持 `alarms` 数组，包含绝对时间或相对提前量。日程的相对通知保持相对形式；提醒的相对通知转换为到期时间的绝对偏移。改期默认同步移动绝对通知，相对日程通知保留提前量；`alarm_policy: "preserve"` 保持绝对通知时间。省略 `alarms` 保留现有通知，`[]` 清空。
-- **写入可靠性**：所有数据写入需 `request_id`，修改/删除还需 `expected_version`。同 ID 同参数重放此前结果，同 ID 不同参数拒绝；同标题与时间/到期日的新建默认检测重复。服务保存后重新读取并比较关键字段，删除后检查对象/实例消失，成功返回 `operation.verified: true`。
+## 更新与卸载
 
-这是写入接口的版本升级：旧调用须补齐请求 ID 和版本字段，更新后重启 MCP 以刷新工具定义。
-
-### 偏好示例
-
-读取 `get_preferences` 的 `version`，再调用 `update_preferences`：
-
-```json
-{
-  "request_id": "prefs-unique-request-id",
-  "expected_version": "get_preferences 返回的 version",
-  "event_duration_minutes": 45,
-  "work_hours": { "days": [1, 2, 3, 4, 5], "start": "09:00", "end": "18:00" }
-}
-```
-
-这些仅为调用示例，不会自动替你设置偏好。日程省略 `end` 时只有已保存常用时长才可创建；更新时只传新 `start` 会保持原持续时长。
-
-### 操作记录与重试
-
-创建/修改/删除/更新偏好时，为每个逻辑动作生成唯一请求 ID。超时后用同一 ID 调用 `get_operation`；`succeeded` 可读取原结果，`pending`/`uncertain` 表示结果不能确定，应查询真实事项后再决定。服务不会自动重做这类写入。`failed` 表示本次在执行副作用前失败。修正参数后用新的 ID。
-
-版本检查基于本机已同步到的数据；发现版本冲突会在写入前拒绝。EventKit 不提供跨设备原子比较并交换，因此这降低并发覆盖风险，但不承诺阻止检查与保存之间所有跨设备竞态。SQLite 记录与 EventKit 也无法共同组成原子事务；保存后若进程中断，记录可能保持 `pending`，重试会停止而不会再创建一份。
-
-偏好、操作记录、撤销快照、草案及变更快照位于 `~/Library/Application Support/Apple Helper MCP/state.sqlite3`，目录/文件权限分别为 700/600。这些本机数据供排查和结果恢复，不上传到独立服务。可用 `APPLE_HELPER_DATA_DIR` 指定独立数据目录；删除操作记录会失去对应请求的重放保护。过期草案和变更快照在下一次同类查询时清理，操作日志需显式压缩；压缩也会移除撤销快照。没有自动回滚或云端备份。
-
-## 安装与启动
-
-要求 macOS 14+、Node.js 20+、Xcode Command Line Tools（`xcrun swiftc`）。原生程序需要在使用它的 Mac 上编译。
+更新前先等待正在执行的写入完成。在仓库中执行：
 
 ```sh
-git clone https://github.com/JordyWang/apple-helper.git
-cd apple-helper
+git pull --ff-only
 npm ci --ignore-scripts
 npm run build
-npm run install:codex
 ```
 
-安装脚本先备份 Codex 配置，再将服务以 `apple-helper` 注册到用户级配置；其他 MCP 和权限策略保留。启动命令使用 Node 和服务器脚本的绝对路径，不依赖客户端启动时的工作目录。
+然后重新加载各客户端的 MCP 连接。若使用 Codex Skill，再执行 `npm run install:skill`；其他客户端按各自方式更新技能。移动仓库或更换 Node 安装位置后，需要同步更新各客户端的绝对路径。
 
-在 Codex 设置 → MCP 服务器中重启 `apple-helper`，或重启客户端后开启新聊天。在输入框使用 `/mcp` 检查连接。详见 [OpenAI 官方 MCP 配置文档](https://learn.chatgpt.com/docs/extend/mcp?surface=app)。
+仅移除连接：
 
-其他客户端的示例配置（替换为该电脑的实际路径）：
+- Codex：`codex mcp remove apple-helper`，或删除手动添加的对应服务表。
+- Claude Code：用户级安装使用 `claude mcp remove --scope user apple-helper`；项目配置则移除 `.mcp.json` 中的该条目。
+- WorkBuddy：在连接器管理页面停用或移除该自定义连接器；只移除 `apple-helper` 的配置。
+- Skill 独立安装，如不再使用，另行移除对应客户端内的 `apple-planner` / `apple-notes` 目录。
 
-```json
-{
-  "mcpServers": {
-    "apple-helper": {
-      "command": "/absolute/path/to/node",
-      "args": ["/absolute/path/to/apple-helper/src/server.js"]
-    }
-  }
-}
+移除连接不会删除 Apple 应用中的数据；也不会自动删除本机操作记录。
+
+## 开发与测试
+
+### 项目结构
+
+```text
+src/server.js                 MCP 服务入口与工具注册
+src/tools.js                  基础工具参数
+src/extensions.js             排程、批量、撤销、统计等参数
+src/notes-tools.js             Notes 工具参数
+src/bridge.js                  原生桥接、队列与超时处理
+native/EventKitBridge.swift   日历/提醒操作及持久化写入包装
+native/Notes.swift            Notes 适配与内容核对
+native/NotesScripts.swift     固定 AppleScript，用户输入经类型化参数传递
+native/StateStore.swift       SQLite 状态与跨进程写入协调
+skills/                       两份配套工作流
+scripts/                      构建、安装与真实应用测试
+docs/advanced-usage.md        详细操作语义与边界
 ```
 
-移动项目或更新后删除原来的 Node 安装时，需要重新运行 `npm run install:codex` 更新路径。卸载连接：`codex mcp remove apple-helper`。
+参数通过 stdin JSON 和类型化 Apple-event 参数传递，不拼接成用户可执行脚本。依赖版本由 `package-lock.json` 固定；构建产物和测试状态文件不提交到仓库。
 
-## 权限
+### 验证命令
 
-先调用 `get_status`。若不是 `full_access`，调用 `request_access`，并在系统弹窗中允许访问。系统设置 → 隐私与安全性 → 日历 / 提醒事项中，检查当前宿主（如 ChatGPT、Terminal）或 Apple Helper MCP 的权限。
+先执行 `npm run build`。其中 `test:live`、`test:priority`、`test:advanced`、`test:extensions`、`test:notes` 会操作真实 Apple 应用，使用临时事项/容器并进行清理；日历/提醒测试需对应权限，Notes 测试需自动化权限。
 
-日历和提醒使用 EventKit 的完整访问权限；Notes 使用“隐私与安全性 → 自动化”中宿主对 Notes 的控制权限。换客户端可能需要重新授权。服务不会修改 TCC 数据库、绕过系统授权或直接读取 Notes 私有数据库。
+| 命令 | 范围 |
+| --- | --- |
+| `npm test` | MCP 协议、参数校验、错误传播与取消行为；不修改系统应用数据 |
+| `npm run test:native` | DST、区间/空闲窗口算法、Notes 转义和内容保护；不修改系统应用数据 |
+| `npm run test:live` | 日历与提醒的增删改查 |
+| `npm run test:priority` | 默认目标、通知、版本冲突、跨进程去重与保存后崩溃 |
+| `npm run test:advanced` | 重复范围、规划、改期冲突、操作核对与压缩 |
+| `npm run test:extensions` | 专用容器中的排程、批量、撤销、差异、统计和容器管理 |
+| `npm run test:notes` | 专用 Notes 文件夹中的搜索、编辑、追加、移动、附件保护、重放和崩溃保护 |
 
-## 调用示例
+v1.4.0 已完成本机标准 MCP SDK 与真实应用测试；这不等于已完成所有客户端、macOS 版本和账户类型的验证。
 
-先用 `get_preferences` 查看默认目标；需要指定其他目标时，通过列表工具取得真实 ID。请求 ID 必须为每个新动作生成，不能反复沿用下面的示例值：
+意外退出时，检查对应的 `.test-state.json`、`.priority-test-state.json`、`.advanced-test-state.json`、`.extensions-test-state.json` 或 `.notes-test-state.json`，按记录中的唯一 ID/名称清理。它们已被 Git 忽略。Notes 提供恢复清理命令 `node scripts/live-notes-test.js --cleanup`，应先确认原测试进程已退出并检查记录；正常删除的笔记仍遵循 Notes“最近删除”的保留行为。
 
-```json
-{
-  "name": "create_reminder",
-  "arguments": {
-    "request_id": "buy-milk-unique-request-id",
-    "list_id": "从 list_reminder_lists 返回的 id",
-    "title": "买牛奶",
-    "due_at": "2026-11-16T18:00:00+08:00",
-    "alarm_at": "2026-11-16T18:00:00+08:00",
-    "time_zone": "Asia/Shanghai"
-  }
-}
-```
-
-```json
-{
-  "name": "create_event",
-  "arguments": {
-    "request_id": "meeting-unique-request-id",
-    "calendar_id": "从 list_calendars 返回的 id",
-    "title": "项目讨论",
-    "start": "2026-11-16T14:00:00+08:00",
-    "end": "2026-11-16T15:00:00+08:00",
-    "time_zone": "Asia/Shanghai",
-    "location": "办公室",
-    "alarms": [
-      { "type": "relative", "offset_minutes": -10 },
-      { "type": "absolute", "at": "2026-11-16T13:00:00+08:00" }
-    ]
-  }
-}
-```
-
-完成提醒：读取对象后，向 `update_reminder` 传 `request_id`、`id`、读取的 `version` 作为 `expected_version`，以及 `completed: true`。用 `notes: ""` 清空备注，用 `due_at: null` 或 `due_date: null` 清到期日期，用 `alarms: []` 清通知。旧的 `alarm_at` 单通知字段仍保留，但不能与 `alarms` 同传。
-
-普通分页查询返回 `items`、`total`、`next_offset`，继续查询时使用 `next_offset`；`get_changes` 使用独立的令牌分页。没有提供 `completed` 时，提醒查询同时包含已完成与未完成项。日程范围上限 366 天，返回与 `[start, end)` 重叠的日程；提醒到期范围为 `[due_after, due_before)`。
-
-## 日期与能力范围
-
-- 时间戳必须带时区偏移或 `Z`；输出时间戳使用 UTC。`time_zone` 使用 IANA 名称，例如 `Asia/Shanghai`。
-- 提醒的 `due_date` 为全天日期 `YYYY-MM-DD`，与 `due_at` 互斥。设置到期日不会自动设置通知，需要额外提供 `alarms` 或旧的 `alarm_at`。相对提醒通知要求具体时间的 `due_at`；全天提醒应使用绝对通知。通知数组表示完整替换，不传则保留原有通知。
-- 通知数量和类型受具体日历账户限制。若系统保存后截断通知或改写字段，写后核对会返回 `RESULT_UNKNOWN` 并附读回结果，不会把部分写入报告为完整成功。
-- 全天日程采用 Mac 当前时区（可用 `get_status` 查询），`start`、`end` 都传当地午夜，`end` 不包含在内。例如 11 月 16 日全天的结束值为 11 月 17 日 00:00。本服务会转换 macOS EventKit 内部的含末秒结束时间。
-- 重复日程按实例展开查询。获取、修改、删除时传查询返回的 `occurrence_start`；默认 `scope: "this"` 只操作该次，`scope: "future"` 包含之后各次，`scope: "all"` 使用 `get_event_series` 的版本操作当前系列。修改后应使用最新返回的 ID 与时间。
-- 重复提醒事项的修改/删除需要 `allow_recurring: true`；完成后系统可能生成下一次提醒。
-- 支持原生重复规则；不操作邀请参会者，不修改或删除带参会者的会议，也不编辑附件、子任务、提醒旗标或定位提醒。
-- 写入会作用于真实账户；只读日历会明确报错。写操作超时后应先查询结果，避免重复创建。
-
-## 验证和维护
-
-```sh
-npm test             # MCP 协议、参数校验、错误传播；不修改系统数据
-npm run test:live    # 使用真实 API 创建临时项目，验证 CRUD，再删除临时项目
-npm run test:priority # 独立偏好目录 + 真实 API：默认目标、多通知、版本冲突、并发重放、保存后崩溃
-npm run test:native   # 夏令时、区间合并与空闲窗口算法
-npm run test:advanced # 重复范围、规划、冲突改期与日志恢复
-npm run test:extensions # 独立容器：任务计划、批量、撤销、差异、统计与容器管理
-npm run test:notes      # 专用 Notes 文件夹：搜索、编辑、追加、移动、删除、重放和崩溃保护
-```
-
-实测脚本使用唯一标题和 2099 年的日期，只清理本次创建的 ID。需要已授权的可写列表及日历；当前测试样例以 `Asia/Shanghai` 为时区。若意外退出，`.test-state.json` 会保存已知测试 ID，可据此清理；该文件已被 Git 忽略。
-
-高优先级测试使用唯一标题查询并清理本次测试事项，`.priority-test-state.json` 保存故障时所需的标题与独立状态目录。故障注入只编译到 `bin/eventkit-test-bridge`；生产原生程序不包含故障注入分支。
-
-结构：`src/server.js` 注册 MCP 工具，`src/tools.js` 定义参数，`src/bridge.js` 调用原生程序，`native/EventKitBridge.swift` 执行 EventKit 操作并核对结果，`native/StateStore.swift` 用 SQLite 保存偏好及操作记录并跨进程串行化写入。输入通过 stdin JSON 传递，不拼接 shell 命令。编译产物在 `bin/`，依赖版本由 `package-lock.json` 固定。
-
-Notes 参数位于 `src/notes-tools.js`，适配器位于 `native/Notes.swift`，固定脚本位于 `native/NotesScripts.swift`。Notes 测试使用唯一命名的临时笔记/文件夹及隔离状态目录，失败时保留 `.notes-test-state.json`；检查该记录后用 `node scripts/live-notes-test.js --cleanup` 清理，处理范围仅限记录中的 ID 和唯一前缀，删除保留期遵循 Notes 的“最近删除”行为。
-
-参考：[Apple EventKit 文档](https://developer.apple.com/documentation/EventKit/EKEventStore)、[官方 MCP TypeScript SDK](https://ts.sdk.modelcontextprotocol.io/server)。
-
-高级验证：`npm run test:native` 检查夏令时与区间算法，`npm run test:advanced` 用临时事项验证规划、重复范围、冲突改期、崩溃核对及压缩后重放。测试状态与个人偏好隔离，失败时保留 `.advanced-test-state.json` 供精确清理。
-
-扩展测试使用 2028 年的日期和唯一命名的专用日历/提醒列表，测试结束删除本次容器及全部测试内容。`.extensions-test-state.json` 保存本次唯一名称前缀和独立状态目录；异常中断时按该记录精确清理。覆盖同草案跨请求去重、执行前冲突、批量停止/继续/续跑、撤销与后续编辑保护、冻结分页/游标过期、重复实例冲突、日程时长统计及崩溃后不重复写入。
+故障注入只编译到 `bin/eventkit-test-bridge`，生产原生程序不包含该分支。实现参考 [Apple EventKit 文档](https://developer.apple.com/documentation/EventKit/EKEventStore)和[官方 MCP TypeScript SDK](https://ts.sdk.modelcontextprotocol.io/server)。
